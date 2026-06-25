@@ -32,7 +32,7 @@ Generate local ATS map tiles. TsMap is expected under `tools/vendor`; SCS Extrac
 .\tools\setup-map-tools.ps1
 ```
 
-Run the headless generator. It reads the ATS archives directly, writes tiles under `.truckcompanion-cache\ats-tiles\{mapFingerprint}`, and skips regeneration when the map fingerprint is unchanged:
+Run the headless generator. It reads the ATS archives directly, writes tiles under `.truckcompanion-cache\ats-tiles\{mapFingerprint}`, writes POI and route-graph data under `.truckcompanion-cache\ats-map`, and skips regeneration when the map fingerprint is unchanged:
 
 ```powershell
 .\tools\generate-ats-tiles.ps1
@@ -41,7 +41,7 @@ Run the headless generator. It reads the ATS archives directly, writes tiles und
 Useful options:
 
 ```powershell
-.\tools\generate-ats-tiles.ps1 -MaxZoom 5
+.\tools\generate-ats-tiles.ps1 -MaxZoom 7 -TileSize 512
 .\tools\generate-ats-tiles.ps1 -Force
 .\tools\generate-ats-tiles.ps1 -ExtractArchives
 ```

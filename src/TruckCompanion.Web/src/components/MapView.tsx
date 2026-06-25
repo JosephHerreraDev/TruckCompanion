@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
-import { Crosshair, LocateFixed, Map, MapPinned, Navigation, Plus, Settings, Trash2, X } from "lucide-react";
+import { BriefcaseBusiness, Crosshair, Fuel, LocateFixed, Map, MapPinned, Navigation, Plus, Settings, Trash2, Wrench, X } from "lucide-react";
 import {
   addRouteStop,
   getMapPois,
@@ -25,21 +25,28 @@ type Props = {
 
 type LeafletState = {
   map: L.Map;
-  tileLayer: L.TileLayer;
   truckMarker: L.Marker;
   routeLine: L.Polyline;
-  drivenLine: L.Polyline;
   routeArrowLayer: L.LayerGroup;
   poiLayer: L.LayerGroup;
   stopLayer: L.LayerGroup;
 };
 
 const FALLBACK_CENTER = { atsX: -38611, atsZ: -5261 };
-const DRIVEN_PATH_KEY = "truckcompanion.drivenPath.v1";
+const ROUTE_REROUTE_DISTANCE = 750;
+const DEFAULT_POI_FILTERS = {
+  fuel: true,
+  repair: true,
+  business: true,
+  city: true
+};
 
 export function MapView({ snapshot }: Props) {
   const mapElement = useRef<HTMLDivElement | null>(null);
   const leaflet = useRef<LeafletState | null>(null);
+  const lastRouteOrigin = useRef<AtsMapCoordinate | null>(null);
+  const lastRouteKey = useRef<string | null>(null);
+  const routeRequestId = useRef(0);
   const [manifest, setManifest] = useState<TileMapManifest | null>(null);
   const [tileStatus, setTileStatus] = useState<TileMapStatus | null>(null);
   const [tileError, setTileError] = useState<string | null>(null);
@@ -52,11 +59,20 @@ export function MapView({ snapshot }: Props) {
   const [units, setUnits] = useState<"metric" | "imperial">("metric");
   const [mapMode, setMapMode] = useState<"drive" | "map">("drive");
   const [wakeLockEnabled, setWakeLockEnabled] = useState(true);
-  const [drivenPath, setDrivenPath] = useState<AtsMapCoordinate[]>(() => readDrivenPath());
+  const [poiFilters, setPoiFilters] = useState(DEFAULT_POI_FILTERS);
   const wakeLock = useWakeLock(wakeLockEnabled);
 
   const projection = useMemo(() => manifest ? createProjection(manifest) : null, [manifest]);
+  const visiblePoints = useMemo(
+    () => points.filter((point) => shouldShowPoint(point, poiFilters, mapMode)),
+    [points, poiFilters, mapMode]
+  );
   const truckCoordinate = toCoordinate(getMapCenter(snapshot));
+  const truckCoordinateRef = useRef(truckCoordinate);
+
+  useEffect(() => {
+    truckCoordinateRef.current = truckCoordinate;
+  }, [truckCoordinate.x, truckCoordinate.z]);
 
   useEffect(() => {
     let active = true;
@@ -94,9 +110,38 @@ export function MapView({ snapshot }: Props) {
       return;
     }
 
+    const origin = toCoordinate(snapshot.truck.position);
+    const routeKey = [
+      snapshot.game.connected,
+      snapshot.job.destination.city,
+      snapshot.job.destination.company,
+      routeVersion
+    ].join("|");
+    const movedFarEnough = !lastRouteOrigin.current || distance(lastRouteOrigin.current, origin) >= ROUTE_REROUTE_DISTANCE;
+    const routeInputsChanged = lastRouteKey.current !== routeKey;
+
+    if (!movedFarEnough && !routeInputsChanged) {
+      return;
+    }
+
+    const requestId = routeRequestId.current + 1;
+    routeRequestId.current = requestId;
+    lastRouteOrigin.current = origin;
+    lastRouteKey.current = routeKey;
+
     getMapRoute(snapshot)
-      .then(setRoute)
-      .catch(() => setRoute(null));
+      .then((nextRoute) => {
+        if (routeRequestId.current !== requestId) {
+          return;
+        }
+
+        setRoute(nextRoute);
+      })
+      .catch(() => {
+        if (routeRequestId.current === requestId) {
+          setRoute(null);
+        }
+      });
   }, [
     snapshot?.game.connected,
     snapshot?.truck.position.atsX,
@@ -107,24 +152,6 @@ export function MapView({ snapshot }: Props) {
   ]);
 
   useEffect(() => {
-    if (!snapshot?.game.connected) {
-      return;
-    }
-
-    const next = toCoordinate(snapshot.truck.position);
-    setDrivenPath((current) => {
-      const last = current[current.length - 1];
-      if (last && distance(last, next) < 220) {
-        return current;
-      }
-
-      const updated = [...current, next].slice(-700);
-      localStorage.setItem(DRIVEN_PATH_KEY, JSON.stringify(updated));
-      return updated;
-    });
-  }, [snapshot?.game.connected, snapshot?.truck.position.atsX, snapshot?.truck.position.atsZ]);
-
-  useEffect(() => {
     if (!manifest || !projection || !mapElement.current || leaflet.current) {
       return;
     }
@@ -132,7 +159,7 @@ export function MapView({ snapshot }: Props) {
     const map = L.map(mapElement.current, {
       attributionControl: false,
       crs: L.CRS.Simple,
-      maxZoom: manifest.maxZoom + 3,
+      maxZoom: manifest.maxZoom,
       minZoom: manifest.minZoom,
       preferCanvas: true,
       zoomControl: false
@@ -143,27 +170,20 @@ export function MapView({ snapshot }: Props) {
       projection.atsToLatLng({ x: manifest.atsBounds.maxX, z: manifest.atsBounds.maxZ })
     );
 
-    const tileLayer = L.tileLayer(manifest.tileUrlTemplate, {
+    L.tileLayer(manifest.tileUrlTemplate, {
       bounds,
       maxNativeZoom: manifest.maxZoom,
-      maxZoom: manifest.maxZoom + 3,
+      maxZoom: manifest.maxZoom,
       minNativeZoom: manifest.minZoom,
       minZoom: manifest.minZoom,
       noWrap: true,
       tileSize: manifest.tileSize
     }).addTo(map);
 
-    const truckMarker = L.marker(projection.atsToLatLng(truckCoordinate), {
+    const truckMarker = L.marker(projection.atsToLatLng(truckCoordinateRef.current), {
       icon: truckIcon(snapshot?.truck.heading ?? 0),
       interactive: false,
       zIndexOffset: 1000
-    }).addTo(map);
-
-    const drivenLine = L.polyline([], {
-      className: "leaflet-driven-line",
-      color: "#fff0a3",
-      opacity: 0.92,
-      weight: 7
     }).addTo(map);
 
     const routeLine = L.polyline([], {
@@ -178,16 +198,16 @@ export function MapView({ snapshot }: Props) {
     const stopLayer = L.layerGroup().addTo(map);
 
     map.setMaxBounds(bounds.pad(0.1));
-    map.setView(projection.atsToLatLng(truckCoordinate), Math.min(manifest.maxZoom + 3, Math.max(manifest.minZoom, manifest.maxZoom + 1)));
+    map.setView(projection.atsToLatLng(truckCoordinateRef.current), Math.min(manifest.maxZoom, Math.max(manifest.minZoom, 6)));
     map.on("dragstart zoomstart", () => setFollow(false));
 
-    leaflet.current = { map, tileLayer, truckMarker, routeLine, drivenLine, routeArrowLayer, poiLayer, stopLayer };
+    leaflet.current = { map, truckMarker, routeLine, routeArrowLayer, poiLayer, stopLayer };
 
     return () => {
       leaflet.current = null;
       map.remove();
     };
-  }, [manifest, projection, snapshot?.truck.heading, truckCoordinate.x, truckCoordinate.z]);
+  }, [manifest, projection]);
 
   useEffect(() => {
     if (!leaflet.current || !projection) {
@@ -210,26 +230,18 @@ export function MapView({ snapshot }: Props) {
     }
 
     const targetZoom = mapMode === "drive"
-      ? Math.min(manifest.maxZoom + 2, leaflet.current.map.getMaxZoom())
+      ? Math.min(manifest.maxZoom, Math.max(manifest.minZoom, 6))
       : Math.min(manifest.maxZoom, leaflet.current.map.getMaxZoom());
 
     if (mapMode === "drive") {
       setFollow(true);
-      leaflet.current.map.setView(projection.atsToLatLng(truckCoordinate), targetZoom, { animate: true });
+      leaflet.current.map.setView(projection.atsToLatLng(truckCoordinateRef.current), targetZoom, { animate: false });
       setSelectedPoint(null);
     } else {
       setFollow(false);
       leaflet.current.map.setZoom(targetZoom, { animate: true });
     }
-  }, [mapMode, manifest, projection, truckCoordinate.x, truckCoordinate.z]);
-
-  useEffect(() => {
-    if (!leaflet.current || !projection) {
-      return;
-    }
-
-    leaflet.current.drivenLine.setLatLngs(drivenPath.map(projection.atsToLatLng));
-  }, [projection, drivenPath]);
+  }, [mapMode, manifest, projection]);
 
   useEffect(() => {
     if (!leaflet.current || !projection) {
@@ -237,17 +249,23 @@ export function MapView({ snapshot }: Props) {
     }
 
     const state = leaflet.current;
-    const visualRoute = route?.isRealMapData ? route : null;
+    const visualRoute = route?.geometry.length ? route : null;
+    state.routeLine.setStyle({
+      dashArray: visualRoute?.isRealMapData === false ? "10 10" : undefined,
+      opacity: visualRoute?.isRealMapData === false ? 0.45 : 0.95
+    });
     state.routeLine.setLatLngs(visualRoute?.geometry.map(projection.atsToLatLng) ?? []);
     state.routeArrowLayer.clearLayers();
     state.stopLayer.clearLayers();
 
-    visualRoute?.arrows.forEach((arrow) => {
+    if (visualRoute?.isRealMapData !== false) {
+      visualRoute?.arrows.forEach((arrow) => {
       L.marker(projection.atsToLatLng(arrow.coordinate), {
         icon: routeArrowIcon(arrow.heading),
         interactive: false
       }).addTo(state.routeArrowLayer);
-    });
+      });
+    }
 
     route?.stops.forEach((stop) => {
       L.marker(projection.atsToLatLng(stop.coordinate), {
@@ -265,11 +283,7 @@ export function MapView({ snapshot }: Props) {
     const state = leaflet.current;
     state.poiLayer.clearLayers();
 
-    if (mapMode === "drive") {
-      return;
-    }
-
-    points.forEach((point) => {
+    visiblePoints.forEach((point) => {
       L.marker(projection.atsToLatLng(point.coordinate), {
         icon: poiIcon(point),
         title: point.label,
@@ -282,7 +296,7 @@ export function MapView({ snapshot }: Props) {
         })
         .addTo(state.poiLayer);
     });
-  }, [projection, points, mapMode]);
+  }, [projection, visiblePoints]);
 
   function recenter() {
     setFollow(true);
@@ -306,6 +320,13 @@ export function MapView({ snapshot }: Props) {
     setRouteVersion((value) => value + 1);
   }
 
+  function togglePoiFilter(filter: keyof typeof DEFAULT_POI_FILTERS) {
+    setPoiFilters((value) => ({ ...value, [filter]: !value[filter] }));
+  }
+
+  const routeStatus = route?.status ?? "routed";
+  const routeWarning = getRouteWarning(routeStatus);
+
   return (
     <section className={`map-shell ${mapMode === "drive" ? "driving-view" : "top-map-view"}`} aria-label="Live ATS map">
       <div ref={mapElement} className="ats-leaflet-map" />
@@ -321,6 +342,10 @@ export function MapView({ snapshot }: Props) {
         <div className="map-data-warning">Tile map incomplete. Run the tile generator before driving.</div>
       ) : tileStatus?.stale ? (
         <div className="map-data-warning">Map update available. Regenerate ATS tiles when you are parked.</div>
+      ) : null}
+
+      {routeWarning ? (
+        <div className="route-data-warning">{routeWarning}</div>
       ) : null}
 
       <div className="maneuver-card">
@@ -361,15 +386,36 @@ export function MapView({ snapshot }: Props) {
         </button>
       </div>
 
-      {selectedPoint && mapMode === "map" ? (
+      {mapMode === "map" && !selectedPoint ? (
+        <div className="poi-filter-bar" aria-label="Point filters">
+          <button type="button" className={poiFilters.fuel ? "active" : ""} onClick={() => togglePoiFilter("fuel")} title="Gas stations">
+            <Fuel size={16} />
+            <span>Gas</span>
+          </button>
+          <button type="button" className={poiFilters.repair ? "active" : ""} onClick={() => togglePoiFilter("repair")} title="Repair and service">
+            <Wrench size={16} />
+            <span>Repair</span>
+          </button>
+          <button type="button" className={poiFilters.business ? "active" : ""} onClick={() => togglePoiFilter("business")} title="Businesses">
+            <BriefcaseBusiness size={16} />
+            <span>Business</span>
+          </button>
+          <button type="button" className={poiFilters.city ? "active" : ""} onClick={() => togglePoiFilter("city")} title="Cities">
+            <MapPinned size={16} />
+            <span>Cities</span>
+          </button>
+        </div>
+      ) : null}
+
+      {selectedPoint ? (
         <div className="stop-sheet">
           <button type="button" className="sheet-close" onClick={() => setSelectedPoint(null)} title="Close">
             <X size={17} />
           </button>
-          <span>{selectedPoint.kind}</span>
+          <span>{poiKindLabel(selectedPoint)}</span>
           <strong>{selectedPoint.label}</strong>
           <small>{selectedPoint.city || selectedPoint.company || "ATS stop"}</small>
-          <button type="button" className="primary-action" onClick={addSelectedStop}>
+          <button type="button" className="primary-action" onClick={addSelectedStop} disabled={selectedPoint.kind === "city"}>
             <Plus size={18} />
             Add stop
           </button>
@@ -478,41 +524,102 @@ function formatDistance(snapshot: TelemetrySnapshot | null, units: "metric" | "i
   return `${snapshot.job.remainingMiles.toFixed(snapshot.job.remainingMiles < 10 ? 1 : 0)} mi`;
 }
 
-function readDrivenPath() {
-  try {
-    const value = localStorage.getItem(DRIVEN_PATH_KEY);
-    if (!value) {
-      return [];
-    }
-
-    const parsed = JSON.parse(value) as AtsMapCoordinate[];
-    return Array.isArray(parsed) ? parsed.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.z)) : [];
-  } catch {
-    return [];
-  }
-}
-
 function distance(a: AtsMapCoordinate, b: AtsMapCoordinate) {
   return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
 function truckIcon(heading: number) {
+  const rotation = ((90 - heading) % 360 + 360) % 360;
+
   return L.divIcon({
     className: "leaflet-truck-icon",
-    html: `<span style="transform: rotate(${heading}deg)"></span>`,
-    iconAnchor: [22, 22],
-    iconSize: [44, 44]
+    html: `
+      <div class="truck-marker__arrow" style="transform: rotate(${rotation}deg)">
+        <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
+          <path d="M18 3 L30 31 L18 25 L6 31 Z" />
+        </svg>
+      </div>
+    `,
+    iconAnchor: [18, 18],
+    iconSize: [36, 36]
   });
 }
 
 function poiIcon(point: AtsMapPoint) {
-  const label = point.kind === "fuel" ? "F" : point.kind === "service" || point.kind === "garage" ? "W" : point.kind === "company" ? "C" : "";
+  const label = point.kind === "fuel"
+    ? "G"
+    : isRepairPoint(point) ? "R"
+      : point.kind === "company" ? "B" : point.kind === "parking" ? "P" : point.kind === "dealer" ? "D" : "";
   return L.divIcon({
     className: `leaflet-poi-icon poi-${point.kind}`,
     html: point.kind === "city" ? `<span>${point.label}</span>` : `<b>${label}</b>`,
     iconAnchor: point.kind === "city" ? [8, 8] : [13, 13],
     iconSize: point.kind === "city" ? [16, 16] : [26, 26]
   });
+}
+
+function shouldShowPoint(
+  point: AtsMapPoint,
+  filters: typeof DEFAULT_POI_FILTERS,
+  mapMode: "drive" | "map"
+) {
+  if (point.kind === "city") {
+    return mapMode === "map" && filters.city;
+  }
+
+  if (point.kind === "fuel") {
+    return filters.fuel;
+  }
+
+  if (isRepairPoint(point)) {
+    return filters.repair;
+  }
+
+  if (point.kind === "company") {
+    return mapMode === "map" && filters.business;
+  }
+
+  return mapMode === "map";
+}
+
+function isRepairPoint(point: AtsMapPoint) {
+  return point.kind === "service" || point.kind === "garage" || point.kind === "dealer";
+}
+
+function poiKindLabel(point: AtsMapPoint) {
+  if (point.kind === "fuel") {
+    return "Gas station";
+  }
+
+  if (isRepairPoint(point)) {
+    return "Repair";
+  }
+
+  if (point.kind === "company") {
+    return "Business";
+  }
+
+  return point.kind;
+}
+
+function getRouteWarning(status: string) {
+  if (status === "noPath") {
+    return "No road route found for the selected destination.";
+  }
+
+  if (status === "partialRoute") {
+    return "Showing a best-effort route. Regenerate map data to improve road connections.";
+  }
+
+  if (status === "noDestination") {
+    return "No destination or stop is selected.";
+  }
+
+  if (status === "seedData") {
+    return "Using seed map data. Generate ATS map data for road-following navigation.";
+  }
+
+  return null;
 }
 
 function routeArrowIcon(heading: number) {

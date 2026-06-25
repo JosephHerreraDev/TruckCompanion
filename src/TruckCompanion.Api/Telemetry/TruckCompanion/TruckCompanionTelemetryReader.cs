@@ -60,7 +60,8 @@ public sealed class TruckCompanionTelemetryReader : IDisposable
             TrailerName: data.Cargo ?? string.Empty,
             Income: 0,
             RemainingNavigationMeters: Math.Max(0, (int)data.NavigationDistanceMeters),
-            RemainingNavigationSeconds: Math.Max(0, (int)data.NavigationTimeSeconds));
+            RemainingNavigationSeconds: Math.Max(0, (int)data.NavigationTimeSeconds),
+            SleepHoursLeft: null);
     }
 
     private static string SecondsToClock(double seconds)

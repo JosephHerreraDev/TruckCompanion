@@ -58,7 +58,8 @@ public sealed record GameTelemetryFrame(
     string TrailerName,
     double Income,
     int RemainingNavigationMeters,
-    int RemainingNavigationSeconds)
+    int RemainingNavigationSeconds,
+    double? SleepHoursLeft)
 {
     internal static GameTelemetryFrame From(Ets2TelemetryStructure data, bool memoryConnected)
     {
@@ -95,7 +96,8 @@ public sealed record GameTelemetryFrame(
             TrailerName: BytesToString(data.trailerName),
             Income: data.jobIncome,
             RemainingNavigationMeters: Math.Max(0, (int)data.navigationDistance),
-            RemainingNavigationSeconds: Math.Max(0, (int)data.navigationTime));
+            RemainingNavigationSeconds: Math.Max(0, (int)data.navigationTime),
+            SleepHoursLeft: data.nextRestStop > 0 ? data.nextRestStop / 60d : null);
     }
 
     private static string BytesToString(byte[]? bytes)

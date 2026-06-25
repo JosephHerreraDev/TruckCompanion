@@ -40,6 +40,7 @@ public static class MockTelemetryFactory
                 remainingMiles,
                 remainingMiles * 1.609344),
             new NavigationState(remainingMiles, remainingMiles * 1.609344, remainingMiles / 58 * 60, remainingMiles / 58 * 3600, 65),
+            new DriverState(Math.Max(0, 8.5 - progress * 3.5)),
             new ConnectionState(source, now, false, null));
     }
 }

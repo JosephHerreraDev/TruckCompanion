@@ -5,6 +5,7 @@ public sealed record TelemetrySnapshot(
     TruckState Truck,
     JobState Job,
     NavigationState Navigation,
+    DriverState Driver,
     ConnectionState Connection);
 
 public sealed record GameState(
@@ -42,6 +43,9 @@ public sealed record NavigationState(
     double EstimatedTimeMinutes,
     double EstimatedTimeSeconds,
     double SpeedLimitMph);
+
+public sealed record DriverState(
+    double? SleepHoursLeft);
 
 public sealed record DamageState(
     double EnginePercent,

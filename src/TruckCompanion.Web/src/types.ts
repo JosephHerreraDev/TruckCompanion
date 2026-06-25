@@ -55,6 +55,9 @@ export type TelemetrySnapshot = {
     estimatedTimeSeconds: number;
     speedLimitMph: number;
   };
+  driver: {
+    sleepHoursLeft: number | null;
+  };
   connection: {
     source: string;
     lastUpdateUtc: string;
@@ -113,6 +116,8 @@ export type AtsMapRoute = {
   arrows: AtsMapRouteArrow[];
   stops: AtsRouteStop[];
   isRealMapData: boolean;
+  status: "routed" | "noDestination" | "noPath" | "seedData" | string;
+  distance: number;
 };
 
 export type AtsMapRouteArrow = {

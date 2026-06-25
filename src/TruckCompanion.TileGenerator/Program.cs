@@ -8,6 +8,9 @@ using System.Text.Json;
 using Newtonsoft.Json;
 using TsMap;
 using TsMap.Canvas;
+using TsMap.Common;
+using TsMap.Helpers;
+using TsMap.Map.Overlays;
 
 var options = GeneratorOptions.Parse(args);
 Directory.CreateDirectory(options.OutputRoot);
@@ -27,16 +30,30 @@ if (!Directory.Exists(options.AtsPath))
 
 var fingerprint = MapFingerprint.Compute(options);
 var manifestPath = Path.Combine(options.OutputRoot, "tile-manifest.json");
+var mapDatabasePath = GetMapDatabasePath(options.OutputRoot);
 var existingManifest = TileManifest.TryRead(manifestPath);
-
-if (!options.Force &&
-    existingManifest is not null &&
+var tilesAreCurrent = existingManifest is not null &&
     string.Equals(existingManifest.MapFingerprint, fingerprint.Value, StringComparison.OrdinalIgnoreCase) &&
     Directory.Exists(Path.Combine(options.OutputRoot, existingManifest.Version)) &&
-    Directory.EnumerateFiles(Path.Combine(options.OutputRoot, existingManifest.Version), "*.png", SearchOption.AllDirectories).Any())
+    Directory.EnumerateFiles(Path.Combine(options.OutputRoot, existingManifest.Version), "*.png", SearchOption.AllDirectories).Any();
+
+if (!options.Force && tilesAreCurrent && MapDatabaseIsCurrent(mapDatabasePath, fingerprint.Value))
 {
-    Console.WriteLine($"Tiles are up to date: {existingManifest.Version}");
+    Console.WriteLine($"Tiles are up to date: {existingManifest!.Version}");
     Console.WriteLine($"Fingerprint: {fingerprint.Value}");
+    Console.WriteLine($"Map data is up to date: {mapDatabasePath}");
+    return 0;
+}
+
+if (!options.Force && tilesAreCurrent)
+{
+    Console.WriteLine($"Tiles are up to date: {existingManifest!.Version}");
+    Console.WriteLine($"Fingerprint: {fingerprint.Value}");
+    Console.WriteLine("Generating missing ATS map data.");
+
+    var mapper = new TsMapper(options.AtsPath, options.ModPaths.Select(path => new Mod(path) { Load = true }).ToList());
+    mapper.Parse();
+    WriteMapDatabase(options, mapper, fingerprint);
     return 0;
 }
 
@@ -68,6 +85,7 @@ try
 
     WriteTileMapInfo(workRoot, tileInfo);
     GenerateTiles(workRoot, renderer, palette, renderFlags, options, tileInfo);
+    WriteMapDatabase(options, mapper, fingerprint);
 
     if (Directory.Exists(versionRoot))
     {
@@ -108,6 +126,437 @@ finally
         Directory.Delete(workRoot, true);
     }
 }
+
+static void WriteMapDatabase(GeneratorOptions options, TsMapper mapper, MapFingerprint fingerprint)
+{
+    var path = GetMapDatabasePath(options.OutputRoot);
+    var outputRoot = Path.GetDirectoryName(path)!;
+    Directory.CreateDirectory(outputRoot);
+
+    var points = BuildPoints(mapper).ToArray();
+    var routeGraph = BuildRouteGraph(mapper);
+    var database = new AtsMapDatabase(
+        $"ATS local map data from {options.AtsPath}",
+        DateTimeOffset.UtcNow,
+        true,
+        [],
+        [],
+        points,
+        fingerprint.Value,
+        routeGraph);
+    var tempPath = path + ".tmp";
+    File.WriteAllText(tempPath, System.Text.Json.JsonSerializer.Serialize(database, AtsMapDatabase.JsonOptions));
+    File.Move(tempPath, path, true);
+    Console.WriteLine($"Wrote {path}");
+}
+
+static string GetMapDatabasePath(string tileOutputRoot)
+{
+    return Path.Combine(Directory.GetParent(tileOutputRoot)?.FullName ?? tileOutputRoot, "ats-map", "ats-map.db");
+}
+
+static bool MapDatabaseIsCurrent(string path, string fingerprint)
+{
+    if (!File.Exists(path))
+    {
+        return false;
+    }
+
+    try
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        return document.RootElement.TryGetProperty("mapFingerprint", out var fingerprintElement) &&
+               document.RootElement.TryGetProperty("schemaVersion", out var schemaElement) &&
+               schemaElement.GetInt32() == AtsMapDatabase.CurrentSchemaVersion &&
+               string.Equals(fingerprintElement.GetString(), fingerprint, StringComparison.OrdinalIgnoreCase);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+static IEnumerable<AtsMapPoint> BuildPoints(TsMapper mapper)
+{
+    foreach (var city in mapper.Cities.Where(city => city.Valid && !city.Hidden && city.City is not null))
+    {
+        var node = mapper.GetNodeByUid(city.NodeUid);
+        if (node is null)
+        {
+            continue;
+        }
+
+        var name = mapper.Localization.GetLocaleValue(city.City.LocalizationToken) ?? city.City.Name;
+        yield return new AtsMapPoint($"city-{Slug(city.City.Name)}-{city.Uid:x}", "city", name, name, null, new AtsMapCoordinate(node.X, node.Z));
+    }
+
+    foreach (var overlay in mapper.OverlayManager.GetOverlays())
+    {
+        var kind = GetPointKind(overlay);
+        if (kind is null || overlay.IsSecret)
+        {
+            continue;
+        }
+
+        var label = GetPointLabel(overlay);
+        yield return new AtsMapPoint(
+            $"{kind}-{Slug(overlay.OverlayName)}-{HashCoordinate(overlay.Position.X, overlay.Position.Y)}",
+            kind,
+            label,
+            null,
+            kind == "company" ? label : null,
+            new AtsMapCoordinate(overlay.Position.X, overlay.Position.Y));
+    }
+}
+
+static AtsRouteGraph BuildRouteGraph(TsMapper mapper)
+{
+    var nodes = new Dictionary<string, AtsRouteNode>(StringComparer.OrdinalIgnoreCase);
+    var edges = new List<AtsRouteEdge>();
+
+    foreach (var road in mapper.Roads.Where(road => road.Valid && !road.Hidden))
+    {
+        var start = road.GetStartNode();
+        var end = road.GetEndNode();
+        if (start is null || end is null)
+        {
+            continue;
+        }
+
+        var startId = RouteNodeId("road", start.Uid);
+        var endId = RouteNodeId("road", end.Uid);
+        var geometry = GetRoadGeometry(road).ToArray();
+        if (geometry.Length < 2)
+        {
+            continue;
+        }
+
+        AddNode(nodes, startId, geometry[0]);
+        AddNode(nodes, endId, geometry[^1]);
+        AddBidirectionalEdge(edges, $"road-{road.Uid:x}", startId, endId, ClassifyRoad(road), null, geometry);
+    }
+
+    foreach (var prefab in mapper.Prefabs.Where(prefab => prefab.Valid && !prefab.Hidden && prefab.Prefab?.MapPoints is not null))
+    {
+        AddPrefabGraph(mapper, prefab, nodes, edges);
+    }
+
+    AddNearbyConnectorEdges(nodes, edges);
+
+    return new AtsRouteGraph(nodes.Values.ToArray(), edges);
+}
+
+static void AddNearbyConnectorEdges(
+    IReadOnlyDictionary<string, AtsRouteNode> nodes,
+    List<AtsRouteEdge> edges)
+{
+    const double connectorRadius = 650;
+    const double connectorRadiusSquared = connectorRadius * connectorRadius;
+    const int maxConnectorsPerNode = 2;
+
+    var disjointSet = new RouteDisjointSet(nodes.Keys);
+    foreach (var edge in edges)
+    {
+        disjointSet.Union(edge.From, edge.To);
+    }
+
+    var connectedPairs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var edge in edges)
+    {
+        connectedPairs.Add(RoutePairKey(edge.From, edge.To));
+    }
+
+    var grid = new Dictionary<(int X, int Z), List<AtsRouteNode>>();
+    foreach (var node in nodes.Values)
+    {
+        var cell = RouteGridCell(node.Coordinate, connectorRadius);
+        for (var dx = -1; dx <= 1; dx++)
+        {
+            for (var dz = -1; dz <= 1; dz++)
+            {
+                var neighbourCell = (cell.X + dx, cell.Z + dz);
+                if (!grid.TryGetValue(neighbourCell, out var candidates))
+                {
+                    continue;
+                }
+
+                var addedForNode = 0;
+                foreach (var candidate in candidates
+                    .Select(candidate => new
+                    {
+                        Node = candidate,
+                        DistanceSquared = DistanceSquared(node.Coordinate, candidate.Coordinate)
+                    })
+                    .Where(candidate => candidate.DistanceSquared > 0 && candidate.DistanceSquared <= connectorRadiusSquared)
+                    .OrderBy(candidate => candidate.DistanceSquared))
+                {
+                    if (addedForNode >= maxConnectorsPerNode)
+                    {
+                        break;
+                    }
+
+                    if (string.Equals(disjointSet.Find(node.Id), disjointSet.Find(candidate.Node.Id), StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var pairKey = RoutePairKey(node.Id, candidate.Node.Id);
+                    if (!connectedPairs.Add(pairKey))
+                    {
+                        continue;
+                    }
+
+                    var geometry = new[]
+                    {
+                        node.Coordinate,
+                        candidate.Node.Coordinate
+                    };
+                    AddBidirectionalEdge(
+                        edges,
+                        $"connector-{edges.Count:x}",
+                        node.Id,
+                        candidate.Node.Id,
+                        "connector",
+                        "Junction connector",
+                        geometry);
+                    disjointSet.Union(node.Id, candidate.Node.Id);
+                    addedForNode++;
+                }
+            }
+        }
+
+        if (!grid.TryGetValue(cell, out var cellNodes))
+        {
+            cellNodes = [];
+            grid[cell] = cellNodes;
+        }
+
+        cellNodes.Add(node);
+    }
+
+    Console.WriteLine($"Route graph: {nodes.Count} node(s), {edges.Count} edge(s), {disjointSet.ComponentCount} connected component(s).");
+}
+
+static void AddPrefabGraph(
+    TsMapper mapper,
+    TsMap.TsItem.TsPrefabItem prefab,
+    Dictionary<string, AtsRouteNode> nodes,
+    List<AtsRouteEdge> edges)
+{
+    var originNode = mapper.GetNodeByUid(prefab.Nodes[0]);
+    if (originNode is null || prefab.Prefab.PrefabNodes is null || prefab.Origin >= prefab.Prefab.PrefabNodes.Count)
+    {
+        return;
+    }
+
+    var originPoint = prefab.Prefab.PrefabNodes[prefab.Origin];
+    var rotation = (float)(originNode.Rotation - Math.PI - Math.Atan2(originPoint.RotZ, originPoint.RotX) + Math.PI / 2);
+    var prefabStartX = originNode.X - originPoint.X;
+    var prefabStartZ = originNode.Z - originPoint.Z;
+    var mapPoints = prefab.Prefab.MapPoints;
+    var coordinates = mapPoints
+        .Select(point => RenderHelper.RotatePoint(prefabStartX + point.X, prefabStartZ + point.Z, rotation, originNode.X, originNode.Z))
+        .Select(point => new AtsMapCoordinate(point.X, point.Y))
+        .ToArray();
+
+    for (var i = 0; i < coordinates.Length; i++)
+    {
+        var point = mapPoints[i];
+        if (point.Hidden || point.ControlNodeIndex < 0 || point.ControlNodeIndex >= prefab.Nodes.Count)
+        {
+            continue;
+        }
+
+        var fromExternalNode = mapper.GetNodeByUid(prefab.Nodes[point.ControlNodeIndex]);
+        if (fromExternalNode is null)
+        {
+            continue;
+        }
+
+        var fromId = RouteNodeId("road", fromExternalNode.Uid);
+        AddNode(nodes, fromId, new AtsMapCoordinate(fromExternalNode.X, fromExternalNode.Z));
+
+        foreach (var neighbourIndex in point.Neighbours.Where(index => index >= 0 && index < coordinates.Length))
+        {
+            var neighbour = mapPoints[neighbourIndex];
+            if (neighbour.Hidden ||
+                neighbourIndex < i ||
+                neighbour.ControlNodeIndex < 0 ||
+                neighbour.ControlNodeIndex >= prefab.Nodes.Count ||
+                neighbour.ControlNodeIndex == point.ControlNodeIndex)
+            {
+                continue;
+            }
+
+            var toExternalNode = mapper.GetNodeByUid(prefab.Nodes[neighbour.ControlNodeIndex]);
+            if (toExternalNode is null)
+            {
+                continue;
+            }
+
+            var toId = RouteNodeId("road", toExternalNode.Uid);
+            AddNode(nodes, toId, new AtsMapCoordinate(toExternalNode.X, toExternalNode.Z));
+            AddBidirectionalEdge(edges, $"prefab-{prefab.Uid:x}-{i}-{neighbourIndex}", fromId, toId, "prefab", null,
+            [
+                new AtsMapCoordinate(fromExternalNode.X, fromExternalNode.Z),
+                coordinates[i],
+                coordinates[neighbourIndex],
+                new AtsMapCoordinate(toExternalNode.X, toExternalNode.Z)
+            ]);
+        }
+    }
+}
+
+static IReadOnlyList<AtsMapCoordinate> GetRoadGeometry(TsMap.TsItem.TsRoadItem road)
+{
+    if (road.HasPoints())
+    {
+        return road.GetPoints().Select(point => new AtsMapCoordinate(point.X, point.Y)).ToArray();
+    }
+
+    var startNode = road.GetStartNode();
+    var endNode = road.GetEndNode();
+    if (startNode is null || endNode is null)
+    {
+        return [];
+    }
+
+    var radius = Math.Sqrt(Math.Pow(startNode.X - endNode.X, 2) + Math.Pow(startNode.Z - endNode.Z, 2));
+    var tanSx = Math.Cos(-(Math.PI * 0.5f - startNode.Rotation)) * radius;
+    var tanEx = Math.Cos(-(Math.PI * 0.5f - endNode.Rotation)) * radius;
+    var tanSz = Math.Sin(-(Math.PI * 0.5f - startNode.Rotation)) * radius;
+    var tanEz = Math.Sin(-(Math.PI * 0.5f - endNode.Rotation)) * radius;
+    var geometry = new List<AtsMapCoordinate>();
+
+    for (var i = 0; i < 12; i++)
+    {
+        var s = i / 11f;
+        var x = TsRoadLook.Hermite(s, startNode.X, endNode.X, tanSx, tanEx);
+        var z = TsRoadLook.Hermite(s, startNode.Z, endNode.Z, tanSz, tanEz);
+        geometry.Add(new AtsMapCoordinate(x, z));
+    }
+
+    return geometry;
+}
+
+static void AddNode(Dictionary<string, AtsRouteNode> nodes, string id, AtsMapCoordinate coordinate)
+{
+    nodes.TryAdd(id, new AtsRouteNode(id, coordinate));
+}
+
+static void AddBidirectionalEdge(
+    List<AtsRouteEdge> edges,
+    string id,
+    string from,
+    string to,
+    string kind,
+    string? label,
+    IReadOnlyList<AtsMapCoordinate> geometry)
+{
+    if (geometry.Count < 2)
+    {
+        return;
+    }
+
+    var distance = GeometryLength(geometry);
+    edges.Add(new AtsRouteEdge(id, from, to, distance, kind, label, geometry));
+}
+
+static double GeometryLength(IReadOnlyList<AtsMapCoordinate> geometry)
+{
+    var distance = 0d;
+    for (var i = 1; i < geometry.Count; i++)
+    {
+        distance += Math.Sqrt(Math.Pow(geometry[i].X - geometry[i - 1].X, 2) + Math.Pow(geometry[i].Z - geometry[i - 1].Z, 2));
+    }
+
+    return distance;
+}
+
+static string ClassifyRoad(TsMap.TsItem.TsRoadItem road)
+{
+    var lanes = (road.RoadLook?.LanesLeft.Count ?? 0) + (road.RoadLook?.LanesRight.Count ?? 0);
+    return lanes >= 4 ? "interstate" : lanes >= 2 ? "highway" : "surface";
+}
+
+static string? GetPointKind(MapOverlay overlay)
+{
+    if (overlay.OverlayType == OverlayType.Company)
+    {
+        return "company";
+    }
+
+    return overlay.TypeName switch
+    {
+        "Fuel" => "fuel",
+        "Service" => "service",
+        "Garage" => "garage",
+        "TruckDealer" => "dealer",
+        "Parking" => "parking",
+        "WeightStation" => "weigh",
+        _ => null
+    };
+}
+
+static string GetPointLabel(MapOverlay overlay)
+{
+    if (overlay.OverlayType == OverlayType.Company)
+    {
+        return string.IsNullOrWhiteSpace(overlay.OverlayName)
+            ? "Business"
+            : CultureLabel(overlay.OverlayName);
+    }
+
+    return overlay.TypeName switch
+    {
+        "TruckDealer" => "Truck Dealer",
+        "WeightStation" => "Weigh Station",
+        _ => overlay.TypeName
+    };
+}
+
+static string CultureLabel(string value)
+{
+    var text = value.Replace('_', ' ').Replace('.', ' ');
+    return string.Join(' ', text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(part => part.Length <= 1 ? part.ToUpperInvariant() : char.ToUpperInvariant(part[0]) + part[1..]));
+}
+
+static string Slug(string value)
+{
+    var builder = new StringBuilder();
+    foreach (var c in value.ToLowerInvariant())
+    {
+        if (char.IsLetterOrDigit(c))
+        {
+            builder.Append(c);
+        }
+        else if (builder.Length > 0 && builder[^1] != '-')
+        {
+            builder.Append('-');
+        }
+    }
+
+    return builder.ToString().Trim('-');
+}
+
+static string HashCoordinate(float x, float z)
+{
+    return $"{Math.Round(x):0}-{Math.Round(z):0}".Replace("-", "m");
+}
+
+static string RouteNodeId(string type, ulong uid, int? index = null) => index is null
+    ? $"{type}-{uid:x}"
+    : $"{type}-{uid:x}-{index.Value}";
+
+static (int X, int Z) RouteGridCell(AtsMapCoordinate coordinate, double cellSize) =>
+    ((int)Math.Floor(coordinate.X / cellSize), (int)Math.Floor(coordinate.Z / cellSize));
+
+static string RoutePairKey(string a, string b) => string.Compare(a, b, StringComparison.OrdinalIgnoreCase) <= 0
+    ? $"{a}|{b}"
+    : $"{b}|{a}";
+
+static double DistanceSquared(AtsMapCoordinate a, AtsMapCoordinate b) =>
+    Math.Pow(a.X - b.X, 2) + Math.Pow(a.Z - b.Z, 2);
 
 static void GenerateTiles(
     string outputRoot,
@@ -230,8 +679,8 @@ internal sealed record GeneratorOptions(
             Path.GetFullPath(atsPath),
             outputRoot,
             ParseInt(values, "min-zoom", 0),
-            ParseInt(values, "max-zoom", 4),
-            ParseInt(values, "tile-size", 256),
+            ParseInt(values, "max-zoom", 7),
+            ParseInt(values, "tile-size", 512),
             ParseInt(values, "map-padding", 500),
             renderFlags,
             flags.Contains("force"),
@@ -452,3 +901,101 @@ internal sealed record TileMapBounds(double MinX, double MinZ, double MaxX, doub
 internal sealed record TilePixelSize(int Width, int Height);
 
 internal sealed record TileCity(string Name, string TokenName, double X, double Z);
+
+internal sealed record AtsMapDatabase(
+    string Source,
+    DateTimeOffset GeneratedAtUtc,
+    bool IsRealMapData,
+    IReadOnlyList<AtsMapRoad> Roads,
+    IReadOnlyList<AtsMapArea> Areas,
+    IReadOnlyList<AtsMapPoint> Points,
+    string? MapFingerprint,
+    AtsRouteGraph? RouteGraph)
+{
+    public const int CurrentSchemaVersion = 5;
+
+    public int SchemaVersion { get; init; } = CurrentSchemaVersion;
+
+    public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = false
+    };
+}
+
+internal sealed record AtsMapRoad(
+    string Id,
+    string Kind,
+    string? Label,
+    IReadOnlyList<AtsMapCoordinate> Geometry);
+
+internal sealed record AtsMapArea(
+    string Id,
+    string Kind,
+    string? Label,
+    IReadOnlyList<AtsMapCoordinate> Polygon);
+
+internal sealed record AtsMapPoint(
+    string Id,
+    string Kind,
+    string Label,
+    string? City,
+    string? Company,
+    AtsMapCoordinate Coordinate);
+
+internal sealed record AtsMapCoordinate(double X, double Z);
+
+internal sealed record AtsRouteGraph(
+    IReadOnlyList<AtsRouteNode> Nodes,
+    IReadOnlyList<AtsRouteEdge> Edges);
+
+internal sealed record AtsRouteNode(
+    string Id,
+    AtsMapCoordinate Coordinate);
+
+internal sealed record AtsRouteEdge(
+    string Id,
+    string From,
+    string To,
+    double Distance,
+    string Kind,
+    string? Label,
+    IReadOnlyList<AtsMapCoordinate> Geometry);
+
+internal sealed class RouteDisjointSet
+{
+    private readonly Dictionary<string, string> parents;
+
+    public RouteDisjointSet(IEnumerable<string> ids)
+    {
+        parents = ids.ToDictionary(id => id, id => id, StringComparer.OrdinalIgnoreCase);
+        ComponentCount = parents.Count;
+    }
+
+    public int ComponentCount { get; private set; }
+
+    public string Find(string id)
+    {
+        var parent = parents[id];
+        if (string.Equals(parent, id, StringComparison.OrdinalIgnoreCase))
+        {
+            return parent;
+        }
+
+        var root = Find(parent);
+        parents[id] = root;
+        return root;
+    }
+
+    public void Union(string a, string b)
+    {
+        var rootA = Find(a);
+        var rootB = Find(b);
+        if (string.Equals(rootA, rootB, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        parents[rootB] = rootA;
+        ComponentCount--;
+    }
+}

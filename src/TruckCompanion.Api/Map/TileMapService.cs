@@ -8,7 +8,7 @@ namespace TruckCompanion.Api.Map;
 public sealed class TileMapService(IWebHostEnvironment environment)
 {
     private const string DefaultAtsPath = @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator";
-    private const string GeneratorVersion = "1";
+    private const string GeneratorVersion = "2";
     private const string DefaultRenderFlags = "Prefabs, Roads, MapAreas, MapOverlays, FerryConnections, CityNames, SecretRoads";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string tileRoot = ResolveTileRoot(environment.ContentRootPath);
@@ -66,7 +66,7 @@ public sealed class TileMapService(IWebHostEnvironment environment)
             manifest?.Source,
             fingerprint?.DlcArchiveCount ?? manifest?.DlcArchiveCount ?? 0,
             manifest?.GeneratedAtUtc,
-            $@".\tools\generate-ats-tiles.ps1 -AtsInstallPath ""{DefaultAtsPath}""",
+            $@".\tools\generate-ats-tiles.ps1 -AtsInstallPath ""{DefaultAtsPath}"" -MaxZoom 7 -TileSize 512",
             missing);
     }
 
@@ -130,7 +130,7 @@ public sealed class TileMapService(IWebHostEnvironment environment)
         var builder = new StringBuilder();
         builder.AppendLine($"generator={GeneratorVersion}");
         builder.AppendLine($"gameVersion={gameVersion}");
-        builder.AppendLine($"minZoom=0;maxZoom=6;tileSize=256;padding=500;flags={DefaultRenderFlags}");
+        builder.AppendLine($"minZoom=0;maxZoom=7;tileSize=512;padding=500;flags={DefaultRenderFlags}");
 
         foreach (var file in files)
         {

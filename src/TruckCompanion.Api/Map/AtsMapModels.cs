@@ -6,7 +6,9 @@ public sealed record AtsMapDatabase(
     bool IsRealMapData,
     IReadOnlyList<AtsMapRoad> Roads,
     IReadOnlyList<AtsMapArea> Areas,
-    IReadOnlyList<AtsMapPoint> Points);
+    IReadOnlyList<AtsMapPoint> Points,
+    string? MapFingerprint = null,
+    AtsRouteGraph? RouteGraph = null);
 
 public sealed record AtsMapRoad(
     string Id,
@@ -30,6 +32,23 @@ public sealed record AtsMapPoint(
 
 public sealed record AtsMapCoordinate(double X, double Z);
 
+public sealed record AtsRouteGraph(
+    IReadOnlyList<AtsRouteNode> Nodes,
+    IReadOnlyList<AtsRouteEdge> Edges);
+
+public sealed record AtsRouteNode(
+    string Id,
+    AtsMapCoordinate Coordinate);
+
+public sealed record AtsRouteEdge(
+    string Id,
+    string From,
+    string To,
+    double Distance,
+    string Kind,
+    string? Label,
+    IReadOnlyList<AtsMapCoordinate> Geometry);
+
 public sealed record AtsMapViewport(
     string Source,
     IReadOnlyList<AtsMapRoad> Roads,
@@ -41,7 +60,9 @@ public sealed record AtsMapRoute(
     IReadOnlyList<AtsMapCoordinate> Geometry,
     IReadOnlyList<AtsMapRouteArrow> Arrows,
     IReadOnlyList<AtsRouteStop> Stops,
-    bool IsRealMapData);
+    bool IsRealMapData,
+    string Status = "routed",
+    double Distance = 0);
 
 public sealed record AtsMapRouteArrow(
     AtsMapCoordinate Coordinate,

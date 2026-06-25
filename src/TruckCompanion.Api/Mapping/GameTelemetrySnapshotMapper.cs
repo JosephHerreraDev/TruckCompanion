@@ -53,6 +53,7 @@ public sealed class GameTelemetrySnapshotMapper(CoordinateProjector projector)
                 EstimatedTimeMinutes: frame.RemainingNavigationSeconds / 60d,
                 EstimatedTimeSeconds: frame.RemainingNavigationSeconds,
                 SpeedLimitMph: KphToMph(frame.SpeedLimitKph)),
+            new DriverState(frame.SleepHoursLeft),
             new ConnectionState("plugin", now, !frame.PluginConnected, BuildError(frame)));
     }
 
