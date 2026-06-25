@@ -1,0 +1,15 @@
+bin/
+obj/
+node_modules/
+dist/
+.vite/
+.vs/
+.idea/
+*.user
+*.suo
+*.swp
+.env
+.env.*
+!.env.example
+.truckcompanion-cache/
+.dotnet-home/
