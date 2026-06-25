@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseSystemDrawing>true</UseSystemDrawing>
+    <NoWarn>$(NoWarn);CA1416;CS0168</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.11" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\tools\vendor\ts-map\TsMap\**\*.cs"
+             Exclude="..\..\tools\vendor\ts-map\TsMap\Properties\AssemblyInfo.cs"
+             LinkBase="TsMap" />
+    <Compile Include="..\..\tools\vendor\ts-map\TsMap.Canvas\SimpleMapPalette.cs"
+             Link="TsMapCanvas\SimpleMapPalette.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\tools\vendor\ts-map\libs\libdeflate.dll"
+          Link="libdeflate.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\vendor\ts-map\docs\custom_resources.zip"
+          Link="custom_resources.zip"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
