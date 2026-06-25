@@ -1,0 +1,519 @@
+{
+  "source": "seeded-from:C:\\Program Files (x86)\\Steam\\steamapps\\common\\American Truck Simulator",
+  "generatedAtUtc": "2026-06-24T23:12:51.401004+00:00",
+  "isRealMapData": false,
+  "roads": [
+    {
+      "id": "i5",
+      "kind": "interstate",
+      "label": "I-5",
+      "geometry": [
+        {
+          "x": -90500,
+          "z": 54500
+        },
+        {
+          "x": -84000,
+          "z": 62000
+        },
+        {
+          "x": -80300,
+          "z": 73500
+        },
+        {
+          "x": -79400,
+          "z": 85000
+        }
+      ]
+    },
+    {
+      "id": "i15",
+      "kind": "interstate",
+      "label": "I-15",
+      "geometry": [
+        {
+          "x": -79400,
+          "z": 85000
+        },
+        {
+          "x": -70000,
+          "z": 73500
+        },
+        {
+          "x": -64000,
+          "z": 67000
+        },
+        {
+          "x": -42000,
+          "z": 47000
+        }
+      ]
+    },
+    {
+      "id": "i10",
+      "kind": "interstate",
+      "label": "I-10",
+      "geometry": [
+        {
+          "x": -80300,
+          "z": 73500
+        },
+        {
+          "x": -70000,
+          "z": 76500
+        },
+        {
+          "x": -57500,
+          "z": 84000
+        },
+        {
+          "x": -33000,
+          "z": 82500
+        },
+        {
+          "x": 20500,
+          "z": 90000
+        }
+      ]
+    },
+    {
+      "id": "us95",
+      "kind": "highway",
+      "label": "US-95",
+      "geometry": [
+        {
+          "x": -81500,
+          "z": 41000
+        },
+        {
+          "x": -76000,
+          "z": 52000
+        },
+        {
+          "x": -64000,
+          "z": 67000
+        },
+        {
+          "x": -57500,
+          "z": 84000
+        }
+      ]
+    },
+    {
+      "id": "i80",
+      "kind": "interstate",
+      "label": "I-80",
+      "geometry": [
+        {
+          "x": -90500,
+          "z": 54500
+        },
+        {
+          "x": -81500,
+          "z": 41000
+        },
+        {
+          "x": -58000,
+          "z": 24000
+        },
+        {
+          "x": -42000,
+          "z": 47000
+        },
+        {
+          "x": -16500,
+          "z": 55500
+        }
+      ]
+    },
+    {
+      "id": "i90-mt",
+      "kind": "interstate",
+      "label": "I-90",
+      "geometry": [
+        {
+          "x": -50500,
+          "z": -12500
+        },
+        {
+          "x": -45500,
+          "z": -7000
+        },
+        {
+          "x": -38000,
+          "z": -1000
+        },
+        {
+          "x": -31500,
+          "z": 3200
+        },
+        {
+          "x": -25000,
+          "z": 6200
+        }
+      ]
+    },
+    {
+      "id": "us212-mt",
+      "kind": "highway",
+      "label": "US-212",
+      "geometry": [
+        {
+          "x": -41000,
+          "z": -5200
+        },
+        {
+          "x": -38000,
+          "z": -1000
+        },
+        {
+          "x": -34200,
+          "z": 2400
+        }
+      ]
+    },
+    {
+      "id": "local-laurel",
+      "kind": "surface",
+      "label": "Laurel",
+      "geometry": [
+        {
+          "x": -39700,
+          "z": -2800
+        },
+        {
+          "x": -38000,
+          "z": -1000
+        },
+        {
+          "x": -36000,
+          "z": -1800
+        },
+        {
+          "x": -34400,
+          "z": -3600
+        }
+      ]
+    }
+  ],
+  "areas": [
+    {
+      "id": "yard-la",
+      "kind": "company",
+      "label": "Voltison Motors",
+      "polygon": [
+        {
+          "x": -81350,
+          "z": 72550
+        },
+        {
+          "x": -79750,
+          "z": 72550
+        },
+        {
+          "x": -79750,
+          "z": 73650
+        },
+        {
+          "x": -81350,
+          "z": 73650
+        },
+        {
+          "x": -81350,
+          "z": 72550
+        }
+      ]
+    },
+    {
+      "id": "yard-phx",
+      "kind": "company",
+      "label": "Rail Export",
+      "polygon": [
+        {
+          "x": -58550,
+          "z": 83075
+        },
+        {
+          "x": -57050,
+          "z": 83075
+        },
+        {
+          "x": -57050,
+          "z": 84125
+        },
+        {
+          "x": -58550,
+          "z": 84125
+        },
+        {
+          "x": -58550,
+          "z": 83075
+        }
+      ]
+    },
+    {
+      "id": "yard-vegas",
+      "kind": "service",
+      "label": "Las Vegas Service",
+      "polygon": [
+        {
+          "x": -64800,
+          "z": 66150
+        },
+        {
+          "x": -63600,
+          "z": 66150
+        },
+        {
+          "x": -63600,
+          "z": 67050
+        },
+        {
+          "x": -64800,
+          "z": 67050
+        },
+        {
+          "x": -64800,
+          "z": 66150
+        }
+      ]
+    },
+    {
+      "id": "yard-reno",
+      "kind": "garage",
+      "label": "Reno Garage",
+      "polygon": [
+        {
+          "x": -82300,
+          "z": 40250
+        },
+        {
+          "x": -81100,
+          "z": 40250
+        },
+        {
+          "x": -81100,
+          "z": 41150
+        },
+        {
+          "x": -82300,
+          "z": 41150
+        },
+        {
+          "x": -82300,
+          "z": 40250
+        }
+      ]
+    },
+    {
+      "id": "yard-laurel-walmart",
+      "kind": "company",
+      "label": "Walmart Megastore",
+      "polygon": [
+        {
+          "x": -38550,
+          "z": -1850
+        },
+        {
+          "x": -37250,
+          "z": -1850
+        },
+        {
+          "x": -37250,
+          "z": -950
+        },
+        {
+          "x": -38550,
+          "z": -950
+        },
+        {
+          "x": -38550,
+          "z": -1850
+        }
+      ]
+    },
+    {
+      "id": "service-laurel",
+      "kind": "service",
+      "label": "Laurel Service",
+      "polygon": [
+        {
+          "x": -37050,
+          "z": -2450
+        },
+        {
+          "x": -36150,
+          "z": -2450
+        },
+        {
+          "x": -36150,
+          "z": -1750
+        },
+        {
+          "x": -37050,
+          "z": -1750
+        },
+        {
+          "x": -37050,
+          "z": -2450
+        }
+      ]
+    }
+  ],
+  "points": [
+    {
+      "id": "city-los-angeles",
+      "kind": "city",
+      "label": "Los Angeles",
+      "city": "Los Angeles",
+      "company": null,
+      "coordinate": {
+        "x": -80300,
+        "z": 73500
+      }
+    },
+    {
+      "id": "city-san-diego",
+      "kind": "city",
+      "label": "San Diego",
+      "city": "San Diego",
+      "company": null,
+      "coordinate": {
+        "x": -79400,
+        "z": 85000
+      }
+    },
+    {
+      "id": "city-san-francisco",
+      "kind": "city",
+      "label": "San Francisco",
+      "city": "San Francisco",
+      "company": null,
+      "coordinate": {
+        "x": -90500,
+        "z": 54500
+      }
+    },
+    {
+      "id": "city-las-vegas",
+      "kind": "city",
+      "label": "Las Vegas",
+      "city": "Las Vegas",
+      "company": null,
+      "coordinate": {
+        "x": -64000,
+        "z": 67000
+      }
+    },
+    {
+      "id": "city-phoenix",
+      "kind": "city",
+      "label": "Phoenix",
+      "city": "Phoenix",
+      "company": null,
+      "coordinate": {
+        "x": -57500,
+        "z": 84000
+      }
+    },
+    {
+      "id": "company-voltison-la",
+      "kind": "company",
+      "label": "Voltison Motors",
+      "city": "Los Angeles",
+      "company": "Voltison Motors",
+      "coordinate": {
+        "x": -80300,
+        "z": 73500
+      }
+    },
+    {
+      "id": "company-rail-export-phx",
+      "kind": "company",
+      "label": "Rail Export",
+      "city": "Phoenix",
+      "company": "Rail Export",
+      "coordinate": {
+        "x": -57500,
+        "z": 84000
+      }
+    },
+    {
+      "id": "service-vegas",
+      "kind": "service",
+      "label": "Service",
+      "city": "Las Vegas",
+      "company": null,
+      "coordinate": {
+        "x": -63800,
+        "z": 66800
+      }
+    },
+    {
+      "id": "fuel-barstow",
+      "kind": "fuel",
+      "label": "Fuel",
+      "city": "Barstow",
+      "company": null,
+      "coordinate": {
+        "x": -70000,
+        "z": 73500
+      }
+    },
+    {
+      "id": "garage-reno",
+      "kind": "garage",
+      "label": "Garage",
+      "city": "Reno",
+      "company": null,
+      "coordinate": {
+        "x": -81500,
+        "z": 41000
+      }
+    },
+    {
+      "id": "city-laurel",
+      "kind": "city",
+      "label": "Laurel",
+      "city": "Laurel",
+      "company": null,
+      "coordinate": {
+        "x": -38000,
+        "z": -1000
+      }
+    },
+    {
+      "id": "company-walmart-laurel",
+      "kind": "company",
+      "label": "Walmart Megastore",
+      "city": "Laurel",
+      "company": "Walmart Megastore",
+      "coordinate": {
+        "x": -37900,
+        "z": -1400
+      }
+    },
+    {
+      "id": "service-laurel",
+      "kind": "service",
+      "label": "Service",
+      "city": "Laurel",
+      "company": null,
+      "coordinate": {
+        "x": -36600,
+        "z": -2100
+      }
+    },
+    {
+      "id": "fuel-laurel",
+      "kind": "fuel",
+      "label": "Fuel",
+      "city": "Laurel",
+      "company": null,
+      "coordinate": {
+        "x": -39200,
+        "z": -2600
+      }
+    }
+  ]
+}
