@@ -135,52 +135,28 @@ export type AtsRouteStop = {
   order: number;
 };
 
-export type TileMapManifest = {
-  version: string;
-  mapFingerprint: string;
-  tileSize: number;
-  minZoom: number;
-  maxZoom: number;
-  atsBounds: {
-    minX: number;
-    minZ: number;
-    maxX: number;
-    maxZ: number;
-  };
-  pixelSizeAtMaxZoom: {
-    width: number;
-    height: number;
-  };
-  tileUrlTemplate: string;
-  generatedAtUtc: string;
-  source: string;
-  gameVersion: string | null;
-  dlcArchiveCount: number;
-  tileCount: number;
-  cities: TileMapCity[];
-};
-
-export type TileMapCity = {
-  name: string;
-  tokenName: string;
-  x: number;
-  z: number;
-};
-
 export type TileMapStatus = {
   tilesReady: boolean;
   stale: boolean;
   state: "missing" | "ready" | "stale" | string;
-  tileRoot: string;
+  mapRoot: string;
   manifestPath: string;
   installedAtsPath: string;
   currentFingerprint: string | null;
-  version: string | null;
-  tileCount: number;
-  maxZoom: number | null;
+  mapFingerprint: string | null;
   source: string | null;
-  dlcArchiveCount: number;
   lastGeneratedUtc: string | null;
   recommendedCommand: string;
+  artifacts: {
+    pmtilesUrl: string | null;
+    searchUrl: string | null;
+    spriteUrl: string | null;
+    glyphsUrl: string | null;
+    parserOutputReady: boolean;
+    pmtilesReady: boolean;
+    graphReady: boolean;
+    searchReady: boolean;
+    spriteReady: boolean;
+  };
   missing: string[];
 };

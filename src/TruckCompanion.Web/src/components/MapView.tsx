@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import L from "leaflet";
+import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type Marker } from "maplibre-gl";
+import { Protocol } from "pmtiles";
+import proj4 from "proj4";
 import { BriefcaseBusiness, Crosshair, Fuel, LocateFixed, Map, MapPinned, Navigation, Plus, Settings, Trash2, Wrench, X } from "lucide-react";
 import {
   addRouteStop,
   getMapPois,
   getMapRoute,
-  getTileMapManifest,
   getTileMapStatus,
   removeRouteStop
 } from "../api/client";
@@ -15,7 +16,6 @@ import type {
   AtsMapPoint,
   AtsMapRoute,
   TelemetrySnapshot,
-  TileMapManifest,
   TileMapStatus
 } from "../types";
 
@@ -23,13 +23,10 @@ type Props = {
   snapshot: TelemetrySnapshot | null;
 };
 
-type LeafletState = {
-  map: L.Map;
-  truckMarker: L.Marker;
-  routeLine: L.Polyline;
-  routeArrowLayer: L.LayerGroup;
-  poiLayer: L.LayerGroup;
-  stopLayer: L.LayerGroup;
+type MapState = {
+  map: MapLibreMap;
+  truckMarker: Marker;
+  stopMarkers: Marker[];
 };
 
 const FALLBACK_CENTER = { atsX: -38611, atsZ: -5261 };
@@ -41,13 +38,27 @@ const DEFAULT_POI_FILTERS = {
   city: true
 };
 
+const EARTH_RADIUS_METERS = 6370997;
+const LENGTH_OF_DEGREE = (EARTH_RADIUS_METERS * Math.PI) / 180;
+const ATS_FACTOR_X = 0.000176689948;
+const ATS_FACTOR_Y = -0.00017706234;
+const atsProjection = proj4([
+  "+proj=lcc",
+  `+R=${EARTH_RADIUS_METERS}`,
+  "+lat_1=33",
+  "+lat_2=45",
+  "+lat_0=39",
+  "+lon_0=-96"
+].join(" "));
+
+let pmtilesRegistered = false;
+
 export function MapView({ snapshot }: Props) {
   const mapElement = useRef<HTMLDivElement | null>(null);
-  const leaflet = useRef<LeafletState | null>(null);
+  const mapState = useRef<MapState | null>(null);
   const lastRouteOrigin = useRef<AtsMapCoordinate | null>(null);
   const lastRouteKey = useRef<string | null>(null);
   const routeRequestId = useRef(0);
-  const [manifest, setManifest] = useState<TileMapManifest | null>(null);
   const [tileStatus, setTileStatus] = useState<TileMapStatus | null>(null);
   const [tileError, setTileError] = useState<string | null>(null);
   const [points, setPoints] = useState<AtsMapPoint[]>([]);
@@ -62,37 +73,27 @@ export function MapView({ snapshot }: Props) {
   const [poiFilters, setPoiFilters] = useState(DEFAULT_POI_FILTERS);
   const wakeLock = useWakeLock(wakeLockEnabled);
 
-  const projection = useMemo(() => manifest ? createProjection(manifest) : null, [manifest]);
   const visiblePoints = useMemo(
     () => points.filter((point) => shouldShowPoint(point, poiFilters, mapMode)),
     [points, poiFilters, mapMode]
   );
   const truckCoordinate = toCoordinate(getMapCenter(snapshot));
-  const truckCoordinateRef = useRef(truckCoordinate);
-
-  useEffect(() => {
-    truckCoordinateRef.current = truckCoordinate;
-  }, [truckCoordinate.x, truckCoordinate.z]);
+  const pmtilesReady = tileStatus?.artifacts.pmtilesReady === true;
 
   useEffect(() => {
     let active = true;
 
-    Promise.allSettled([getTileMapStatus(), getTileMapManifest(), getMapPois()])
-      .then(([statusResult, manifestResult, pointsResult]) => {
+    Promise.allSettled([getTileMapStatus(), getMapPois()])
+      .then(([statusResult, pointsResult]) => {
         if (!active) {
           return;
         }
 
         if (statusResult.status === "fulfilled") {
           setTileStatus(statusResult.value);
-        }
-
-        if (manifestResult.status === "fulfilled") {
-          setManifest(manifestResult.value);
-          setTileError(null);
+          setTileError(statusResult.value.tilesReady ? null : statusResult.value.missing[0] ?? "Generated ATS map data is missing.");
         } else {
-          setManifest(null);
-          setTileError("Generated ATS tiles are missing. Run tools\\generate-ats-tiles.ps1.");
+          setTileError("Generated ATS map data is missing. Run tools\\generate-ats-tiles.ps1.");
         }
 
         if (pointsResult.status === "fulfilled") {
@@ -131,11 +132,9 @@ export function MapView({ snapshot }: Props) {
 
     getMapRoute(snapshot)
       .then((nextRoute) => {
-        if (routeRequestId.current !== requestId) {
-          return;
+        if (routeRequestId.current === requestId) {
+          setRoute(nextRoute);
         }
-
-        setRoute(nextRoute);
       })
       .catch(() => {
         if (routeRequestId.current === requestId) {
@@ -152,158 +151,171 @@ export function MapView({ snapshot }: Props) {
   ]);
 
   useEffect(() => {
-    if (!manifest || !projection || !mapElement.current || leaflet.current) {
+    if (!pmtilesReady || !mapElement.current || mapState.current) {
       return;
     }
 
-    const map = L.map(mapElement.current, {
+    if (!pmtilesRegistered) {
+      const protocol = new Protocol();
+      maplibregl.addProtocol("pmtiles", protocol.tile);
+      pmtilesRegistered = true;
+    }
+
+    const map = new maplibregl.Map({
+      container: mapElement.current,
       attributionControl: false,
-      crs: L.CRS.Simple,
-      maxZoom: manifest.maxZoom,
-      minZoom: manifest.minZoom,
-      preferCanvas: true,
-      zoomControl: false
+      center: atsToLngLat(truckCoordinate),
+      zoom: 5.8,
+      minZoom: 3,
+      maxZoom: 14,
+      pitch: 0,
+      style: createMapStyle()
     });
 
-    const bounds = L.latLngBounds(
-      projection.atsToLatLng({ x: manifest.atsBounds.minX, z: manifest.atsBounds.minZ }),
-      projection.atsToLatLng({ x: manifest.atsBounds.maxX, z: manifest.atsBounds.maxZ })
-    );
+    const truckMarker = new maplibregl.Marker({
+      element: createTruckMarker(snapshot?.truck.heading ?? 0),
+      rotationAlignment: "map"
+    })
+      .setLngLat(atsToLngLat(truckCoordinate))
+      .addTo(map);
 
-    L.tileLayer(manifest.tileUrlTemplate, {
-      bounds,
-      maxNativeZoom: manifest.maxZoom,
-      maxZoom: manifest.maxZoom,
-      minNativeZoom: manifest.minZoom,
-      minZoom: manifest.minZoom,
-      noWrap: true,
-      tileSize: manifest.tileSize
-    }).addTo(map);
+    map.on("dragstart", () => setFollow(false));
+    map.on("zoomstart", () => setFollow(false));
+    map.on("load", () => {
+      map.addSource("truckcompanion-route", emptyLineSource());
+      map.addLayer({
+        id: "truckcompanion-route-line",
+        type: "line",
+        source: "truckcompanion-route",
+        paint: {
+          "line-color": "#38d9ff",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 4, 3, 10, 9, 14, 15],
+          "line-opacity": 0.94
+        },
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        }
+      });
 
-    const truckMarker = L.marker(projection.atsToLatLng(truckCoordinateRef.current), {
-      icon: truckIcon(snapshot?.truck.heading ?? 0),
-      interactive: false,
-      zIndexOffset: 1000
-    }).addTo(map);
+      map.addSource("truckcompanion-pois", emptyPoiSource());
+      map.addLayer({
+        id: "truckcompanion-poi-points",
+        type: "circle",
+        source: "truckcompanion-pois",
+        paint: {
+          "circle-radius": ["case", ["==", ["get", "kind"], "city"], 3, 8],
+          "circle-color": [
+            "match",
+            ["get", "kind"],
+            "fuel", "#2fb86c",
+            "service", "#e25543",
+            "garage", "#e25543",
+            "dealer", "#e25543",
+            "company", "#f8c931",
+            "parking", "#60a5fa",
+            "weigh", "#a78bfa",
+            "#f8fafc"
+          ],
+          "circle-stroke-color": "#111827",
+          "circle-stroke-width": 2
+        }
+      });
+      map.on("click", "truckcompanion-poi-points", (event) => {
+        const id = event.features?.[0]?.properties?.id as string | undefined;
+        const point = points.find((candidate) => candidate.id === id);
+        if (!point) {
+          return;
+        }
 
-    const routeLine = L.polyline([], {
-      className: "leaflet-route-line",
-      color: "#38d9ff",
-      opacity: 0.95,
-      weight: 12
-    }).addTo(map);
+        setSelectedPoint(point);
+        setFollow(false);
+        map.easeTo({ center: atsToLngLat(point.coordinate), duration: 200 });
+      });
+      map.on("mouseenter", "truckcompanion-poi-points", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "truckcompanion-poi-points", () => {
+        map.getCanvas().style.cursor = "";
+      });
+    });
 
-    const routeArrowLayer = L.layerGroup().addTo(map);
-    const poiLayer = L.layerGroup().addTo(map);
-    const stopLayer = L.layerGroup().addTo(map);
-
-    map.setMaxBounds(bounds.pad(0.1));
-    map.setView(projection.atsToLatLng(truckCoordinateRef.current), Math.min(manifest.maxZoom, Math.max(manifest.minZoom, 6)));
-    map.on("dragstart zoomstart", () => setFollow(false));
-
-    leaflet.current = { map, truckMarker, routeLine, routeArrowLayer, poiLayer, stopLayer };
+    mapState.current = { map, truckMarker, stopMarkers: [] };
 
     return () => {
-      leaflet.current = null;
+      mapState.current = null;
       map.remove();
     };
-  }, [manifest, projection]);
+  }, [pmtilesReady]);
 
   useEffect(() => {
-    if (!leaflet.current || !projection) {
+    const state = mapState.current;
+    if (!state) {
       return;
     }
 
-    const state = leaflet.current;
-    const truckLatLng = projection.atsToLatLng(truckCoordinate);
-    state.truckMarker.setLatLng(truckLatLng);
-    state.truckMarker.setIcon(truckIcon(snapshot?.truck.heading ?? 0));
+    const truckLngLat = atsToLngLat(truckCoordinate);
+    state.truckMarker.setLngLat(truckLngLat);
+    state.truckMarker.getElement().style.setProperty("--truck-heading", `${((90 - (snapshot?.truck.heading ?? 0)) % 360 + 360) % 360}deg`);
 
     if (follow) {
-      state.map.panTo(truckLatLng, { animate: true, duration: 0.25 });
+      state.map.easeTo({ center: truckLngLat, duration: 250 });
     }
-  }, [projection, follow, snapshot?.truck.heading, truckCoordinate.x, truckCoordinate.z]);
+  }, [follow, snapshot?.truck.heading, truckCoordinate.x, truckCoordinate.z]);
 
   useEffect(() => {
-    if (!leaflet.current || !projection || !manifest) {
+    const state = mapState.current;
+    if (!state) {
       return;
     }
-
-    const targetZoom = mapMode === "drive"
-      ? Math.min(manifest.maxZoom, Math.max(manifest.minZoom, 6))
-      : Math.min(manifest.maxZoom, leaflet.current.map.getMaxZoom());
 
     if (mapMode === "drive") {
       setFollow(true);
-      leaflet.current.map.setView(projection.atsToLatLng(truckCoordinateRef.current), targetZoom, { animate: false });
       setSelectedPoint(null);
+      state.map.easeTo({ center: atsToLngLat(truckCoordinate), zoom: Math.max(state.map.getZoom(), 6), duration: 0 });
     } else {
       setFollow(false);
-      leaflet.current.map.setZoom(targetZoom, { animate: true });
+      state.map.easeTo({ zoom: Math.max(state.map.getZoom(), 5), duration: 250 });
     }
-  }, [mapMode, manifest, projection]);
+  }, [mapMode]);
 
   useEffect(() => {
-    if (!leaflet.current || !projection) {
+    const map = mapState.current?.map;
+    if (!map || !map.isStyleLoaded()) {
       return;
     }
 
-    const state = leaflet.current;
-    const visualRoute = route?.geometry.length ? route : null;
-    state.routeLine.setStyle({
-      dashArray: visualRoute?.isRealMapData === false ? "10 10" : undefined,
-      opacity: visualRoute?.isRealMapData === false ? 0.45 : 0.95
-    });
-    state.routeLine.setLatLngs(visualRoute?.geometry.map(projection.atsToLatLng) ?? []);
-    state.routeArrowLayer.clearLayers();
-    state.stopLayer.clearLayers();
+    const source = map.getSource("truckcompanion-route") as GeoJSONSource | undefined;
+    source?.setData(routeToGeoJson(route));
 
-    if (visualRoute?.isRealMapData !== false) {
-      visualRoute?.arrows.forEach((arrow) => {
-      L.marker(projection.atsToLatLng(arrow.coordinate), {
-        icon: routeArrowIcon(arrow.heading),
-        interactive: false
-      }).addTo(state.routeArrowLayer);
-      });
+    const routeLayer = map.getLayer("truckcompanion-route-line");
+    if (routeLayer) {
+      map.setPaintProperty("truckcompanion-route-line", "line-opacity", route?.isRealMapData === false ? 0.45 : 0.94);
+      map.setPaintProperty("truckcompanion-route-line", "line-dasharray", route?.isRealMapData === false ? [1, 1] : [1, 0]);
     }
 
-    route?.stops.forEach((stop) => {
-      L.marker(projection.atsToLatLng(stop.coordinate), {
-        icon: stopIcon(stop.order),
-        zIndexOffset: 700
-      }).addTo(state.stopLayer);
-    });
-  }, [projection, route]);
+    mapState.current?.stopMarkers.forEach((marker) => marker.remove());
+    mapState.current!.stopMarkers = (route?.stops ?? []).map((stop) =>
+      new maplibregl.Marker({ element: createStopMarker(stop.order) })
+        .setLngLat(atsToLngLat(stop.coordinate))
+        .addTo(map)
+    );
+  }, [route]);
 
   useEffect(() => {
-    if (!leaflet.current || !projection) {
+    const map = mapState.current?.map;
+    if (!map || !map.isStyleLoaded()) {
       return;
     }
 
-    const state = leaflet.current;
-    state.poiLayer.clearLayers();
-
-    visiblePoints.forEach((point) => {
-      L.marker(projection.atsToLatLng(point.coordinate), {
-        icon: poiIcon(point),
-        title: point.label,
-        zIndexOffset: point.kind === "city" ? 100 : 400
-      })
-        .on("click", () => {
-          setSelectedPoint(point);
-          setFollow(false);
-          state.map.panTo(projection.atsToLatLng(point.coordinate), { animate: true, duration: 0.2 });
-        })
-        .addTo(state.poiLayer);
-    });
-  }, [projection, visiblePoints]);
+    const source = map.getSource("truckcompanion-pois") as GeoJSONSource | undefined;
+    source?.setData(pointsToGeoJson(visiblePoints));
+  }, [visiblePoints]);
 
   function recenter() {
     setFollow(true);
     setSelectedPoint(null);
-    leaflet.current?.map.setView(projection?.atsToLatLng(truckCoordinate) ?? [0, 0], leaflet.current.map.getZoom(), {
-      animate: true
-    });
+    mapState.current?.map.easeTo({ center: atsToLngLat(truckCoordinate), duration: 250 });
   }
 
   async function addSelectedStop() {
@@ -329,19 +341,19 @@ export function MapView({ snapshot }: Props) {
 
   return (
     <section className={`map-shell ${mapMode === "drive" ? "driving-view" : "top-map-view"}`} aria-label="Live ATS map">
-      <div ref={mapElement} className="ats-leaflet-map" />
+      <div ref={mapElement} className="ats-maplibre-map" />
 
-      {!manifest ? (
+      {!pmtilesReady ? (
         <div className="tile-empty-state">
-          <strong>ATS tiles are not ready</strong>
+          <strong>ATS map data is not ready</strong>
           <span>{tileError ?? tileStatus?.missing[0] ?? "Run tools\\generate-ats-tiles.ps1 to render the game map."}</span>
         </div>
       ) : null}
 
       {tileStatus && !tileStatus.tilesReady ? (
-        <div className="map-data-warning">Tile map incomplete. Run the tile generator before driving.</div>
+        <div className="map-data-warning">Map data incomplete. Run the generator before driving.</div>
       ) : tileStatus?.stale ? (
-        <div className="map-data-warning">Map update available. Regenerate ATS tiles when you are parked.</div>
+        <div className="map-data-warning">Map update available. Regenerate ATS map data when you are parked.</div>
       ) : null}
 
       {routeWarning ? (
@@ -456,8 +468,8 @@ export function MapView({ snapshot }: Props) {
           <small>{wakeLockStatus(wakeLock.state)}</small>
           <small>
             {tileStatus?.tilesReady
-              ? `${tileStatus.tileCount} tiles loaded · ${tileStatus.state}`
-              : "No generated tile map"}
+              ? `PMTiles loaded · ${tileStatus.state}`
+              : "No generated map data"}
           </small>
           {tileStatus?.stale ? <small>{tileStatus.recommendedCommand}</small> : null}
         </div>
@@ -466,18 +478,147 @@ export function MapView({ snapshot }: Props) {
   );
 }
 
-function createProjection(manifest: TileMapManifest) {
-  const scaleX = manifest.pixelSizeAtMaxZoom.width / (manifest.atsBounds.maxX - manifest.atsBounds.minX);
-  const scaleZ = manifest.pixelSizeAtMaxZoom.height / (manifest.atsBounds.maxZ - manifest.atsBounds.minZ);
-  const divisor = 2 ** manifest.maxZoom;
-
+function createMapStyle(): maplibregl.StyleSpecification {
   return {
-    atsToLatLng(point: AtsMapCoordinate) {
-      const x = (point.x - manifest.atsBounds.minX) * scaleX;
-      const y = (point.z - manifest.atsBounds.minZ) * scaleZ;
-      return L.latLng(-y / divisor, x / divisor);
+    version: 8,
+    sprite: "/map/spritesheet",
+    sources: {
+      ats: {
+        type: "vector",
+        url: "pmtiles:///map/ats.pmtiles"
+      }
+    },
+    layers: [
+      {
+        id: "background",
+        type: "background",
+        paint: { "background-color": "#202428" }
+      },
+      {
+        id: "map-areas",
+        type: "fill",
+        source: "ats",
+        "source-layer": "ats",
+        filter: ["in", ["get", "type"], ["literal", ["mapArea", "prefab"]]],
+        paint: {
+          "fill-color": ["coalesce", ["get", "color"], "#3a4148"],
+          "fill-opacity": 0.82
+        }
+      },
+      {
+        id: "roads-casing",
+        type: "line",
+        source: "ats",
+        "source-layer": "ats",
+        filter: ["==", ["get", "type"], "road"],
+        paint: {
+          "line-color": "#111418",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.5, 10, 7, 14, 16]
+        },
+        layout: { "line-cap": "round", "line-join": "round" }
+      },
+      {
+        id: "roads",
+        type: "line",
+        source: "ats",
+        "source-layer": "ats",
+        filter: ["==", ["get", "type"], "road"],
+        paint: {
+          "line-color": [
+            "match",
+            ["get", "roadType"],
+            "freeway", "#f5b61f",
+            "divided", "#e7aa20",
+            "local", "#8b8f94",
+            "#9da3aa"
+          ],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.8, 10, 4, 14, 10]
+        },
+        layout: { "line-cap": "round", "line-join": "round" }
+      },
+      {
+        id: "ferries",
+        type: "line",
+        source: "ats",
+        "source-layer": "ats",
+        filter: ["in", ["get", "type"], ["literal", ["ferry", "train"]]],
+        paint: {
+          "line-color": "#60a5fa",
+          "line-width": 2,
+          "line-dasharray": [2, 2]
+        }
+      },
+      {
+        id: "base-pois",
+        type: "symbol",
+        source: "ats",
+        "source-layer": "ats",
+        filter: ["==", ["get", "type"], "poi"],
+        layout: {
+          "icon-image": ["get", "sprite"],
+          "icon-size": 0.7,
+          "icon-allow-overlap": false
+        }
+      }
+    ]
+  };
+}
+
+function emptyLineSource(): maplibregl.GeoJSONSourceSpecification {
+  return {
+    type: "geojson",
+    data: {
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "LineString",
+        coordinates: []
+      }
     }
   };
+}
+
+function emptyPoiSource(): maplibregl.GeoJSONSourceSpecification {
+  return {
+    type: "geojson",
+    data: pointsToGeoJson([])
+  };
+}
+
+function routeToGeoJson(route: AtsMapRoute | null) {
+  return {
+    type: "Feature" as const,
+    properties: {},
+    geometry: {
+      type: "LineString" as const,
+      coordinates: route?.geometry.map(atsToLngLat) ?? []
+    }
+  };
+}
+
+function pointsToGeoJson(points: AtsMapPoint[]) {
+  return {
+    type: "FeatureCollection" as const,
+    features: points.map((point) => ({
+      type: "Feature" as const,
+      properties: {
+        id: point.id,
+        kind: point.kind,
+        label: point.label
+      },
+      geometry: {
+        type: "Point" as const,
+        coordinates: atsToLngLat(point.coordinate)
+      }
+    }))
+  };
+}
+
+function atsToLngLat(point: AtsMapCoordinate): [number, number] {
+  return atsProjection.inverse([
+    point.x * ATS_FACTOR_X * LENGTH_OF_DEGREE,
+    point.z * ATS_FACTOR_Y * LENGTH_OF_DEGREE
+  ]) as [number, number];
 }
 
 function wakeLockStatus(state: "unsupported" | "inactive" | "active" | "error") {
@@ -526,36 +667,6 @@ function formatDistance(snapshot: TelemetrySnapshot | null, units: "metric" | "i
 
 function distance(a: AtsMapCoordinate, b: AtsMapCoordinate) {
   return Math.hypot(a.x - b.x, a.z - b.z);
-}
-
-function truckIcon(heading: number) {
-  const rotation = ((90 - heading) % 360 + 360) % 360;
-
-  return L.divIcon({
-    className: "leaflet-truck-icon",
-    html: `
-      <div class="truck-marker__arrow" style="transform: rotate(${rotation}deg)">
-        <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
-          <path d="M18 3 L30 31 L18 25 L6 31 Z" />
-        </svg>
-      </div>
-    `,
-    iconAnchor: [18, 18],
-    iconSize: [36, 36]
-  });
-}
-
-function poiIcon(point: AtsMapPoint) {
-  const label = point.kind === "fuel"
-    ? "G"
-    : isRepairPoint(point) ? "R"
-      : point.kind === "company" ? "B" : point.kind === "parking" ? "P" : point.kind === "dealer" ? "D" : "";
-  return L.divIcon({
-    className: `leaflet-poi-icon poi-${point.kind}`,
-    html: point.kind === "city" ? `<span>${point.label}</span>` : `<b>${label}</b>`,
-    iconAnchor: point.kind === "city" ? [8, 8] : [13, 13],
-    iconSize: point.kind === "city" ? [16, 16] : [26, 26]
-  });
 }
 
 function shouldShowPoint(
@@ -622,20 +733,21 @@ function getRouteWarning(status: string) {
   return null;
 }
 
-function routeArrowIcon(heading: number) {
-  return L.divIcon({
-    className: "leaflet-route-arrow",
-    html: `<span style="transform: rotate(${heading}deg)"></span>`,
-    iconAnchor: [14, 14],
-    iconSize: [28, 28]
-  });
+function createTruckMarker(heading: number) {
+  const marker = document.createElement("div");
+  marker.className = "maplibre-truck-marker";
+  marker.style.setProperty("--truck-heading", `${((90 - heading) % 360 + 360) % 360}deg`);
+  marker.innerHTML = `
+    <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
+      <path d="M18 3 L30 31 L18 25 L6 31 Z" />
+    </svg>
+  `;
+  return marker;
 }
 
-function stopIcon(order: number) {
-  return L.divIcon({
-    className: "leaflet-stop-icon",
-    html: `<span>${order}</span>`,
-    iconAnchor: [15, 15],
-    iconSize: [30, 30]
-  });
+function createStopMarker(order: number) {
+  const marker = document.createElement("div");
+  marker.className = "maplibre-stop-marker";
+  marker.textContent = order.toString();
+  return marker;
 }

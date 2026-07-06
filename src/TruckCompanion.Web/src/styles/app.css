@@ -35,7 +35,7 @@ input {
 
 .map-shell,
 .ats-map,
-.ats-leaflet-map {
+.ats-maplibre-map {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -43,7 +43,7 @@ input {
 }
 
 .ats-map,
-.ats-leaflet-map {
+.ats-maplibre-map {
   display: block;
   background:
     radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.04), transparent 34%),
@@ -52,15 +52,11 @@ input {
   user-select: none;
 }
 
-.ats-leaflet-map {
+.ats-maplibre-map {
   z-index: 1;
 }
 
-.ats-leaflet-map .leaflet-tile {
-  image-rendering: auto;
-}
-
-.leaflet-control-container {
+.maplibregl-control-container {
   display: none;
 }
 
@@ -155,16 +151,44 @@ input {
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.45));
 }
 
-.leaflet-route-line {
-  filter: drop-shadow(0 0 9px rgba(56, 217, 255, 0.55));
-}
-
-.leaflet-truck-icon,
-.leaflet-route-arrow,
-.leaflet-poi-icon,
-.leaflet-stop-icon {
+.maplibre-truck-marker,
+.maplibre-stop-marker {
   background: transparent;
   border: 0;
+}
+
+.maplibre-truck-marker {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  transform: rotate(var(--truck-heading, 0deg));
+  transform-origin: center;
+}
+
+.maplibre-truck-marker svg {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.45));
+}
+
+.maplibre-truck-marker path {
+  fill: #2563eb;
+  stroke: #ffffff;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.maplibre-stop-marker {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 3px solid #f8fafc;
+  border-radius: 50%;
+  color: #052e16;
+  background: #2fb86c;
+  font-size: 0.82rem;
+  font-weight: 950;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.32);
 }
 
 .truck-marker__arrow {
@@ -184,88 +208,6 @@ input {
   stroke: #ffffff;
   stroke-linejoin: round;
   stroke-width: 2;
-}
-
-.leaflet-route-arrow span {
-  display: block;
-  width: 28px;
-  height: 28px;
-}
-
-.leaflet-route-arrow span::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 0;
-  width: 0;
-  height: 0;
-  border-right: 10px solid transparent;
-  border-bottom: 26px solid #f8fafc;
-  border-left: 10px solid transparent;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5));
-}
-
-.leaflet-poi-icon {
-  display: grid;
-  place-items: center;
-}
-
-.leaflet-poi-icon b {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: 3px solid #111827;
-  border-radius: 50%;
-  color: #111827;
-  background: #f8fafc;
-  font-size: 0.75rem;
-  font-weight: 950;
-}
-
-.leaflet-poi-icon.poi-fuel b {
-  background: #2fb86c;
-}
-
-.leaflet-poi-icon.poi-service b,
-.leaflet-poi-icon.poi-garage b,
-.leaflet-poi-icon.poi-dealer b {
-  background: #e25543;
-}
-
-.leaflet-poi-icon.poi-company b {
-  background: #f8c931;
-}
-
-.leaflet-poi-icon.poi-parking b {
-  background: #60a5fa;
-}
-
-.leaflet-poi-icon.poi-weigh b {
-  background: #a78bfa;
-}
-
-.leaflet-poi-icon.poi-city span {
-  color: #f8c931;
-  paint-order: stroke;
-  text-shadow: 0 2px 0 #000000, 0 -2px 0 #000000, 2px 0 0 #000000, -2px 0 0 #000000;
-  font-size: 0.92rem;
-  font-weight: 950;
-  white-space: nowrap;
-}
-
-.leaflet-stop-icon span {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 3px solid #f8fafc;
-  border-radius: 50%;
-  color: #052e16;
-  background: #2fb86c;
-  font-size: 0.82rem;
-  font-weight: 950;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.32);
 }
 
 .road-label {
@@ -431,15 +373,11 @@ input {
   backdrop-filter: blur(12px);
 }
 
-.driving-view .leaflet-poi-icon.poi-city {
-  display: none;
-}
-
 .driving-view .maneuver-card {
   top: max(16px, env(safe-area-inset-top));
 }
 
-.driving-view .ats-leaflet-map {
+.driving-view .ats-maplibre-map {
   filter: saturate(1.04) contrast(1.06);
 }
 
@@ -913,7 +851,7 @@ input {
   }
 
   .map-shell,
-  .ats-leaflet-map {
+  .ats-maplibre-map {
     height: 100dvh;
   }
 

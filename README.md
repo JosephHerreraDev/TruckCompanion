@@ -6,7 +6,8 @@ TruckCompanion is a local American Truck Simulator companion app. The backend re
 
 - `src/TruckCompanion.Api` - ASP.NET Core API and telemetry stream.
 - `src/TruckCompanion.Web` - Vite, React, TypeScript, ATS-coordinate PWA.
-- `src/TruckCompanion.TileGenerator` - headless TsMap-based local ATS tile generator.
+- `tools/vendor/truckermudgeon-maps` - pinned upstream ATS map parser/generator used for PMTiles, search, and route graph data.
+- `src/TruckCompanion.TileGenerator` - retired TsMap-based local ATS tile generator kept for reference only.
 - `src/TruckCompanion.MapImport` - legacy local ATS-coordinate seed database generator.
 - `src/TruckCompanion.TelemetryPlugin` - native telemetry plugin source scaffold.
 
@@ -26,13 +27,7 @@ If ATS is installed outside the default Steam location:
 
 Restart ATS after installing the plugin.
 
-Generate local ATS map tiles. TsMap is expected under `tools/vendor`; SCS Extractor is kept only for diagnostic/manual extraction:
-
-```powershell
-.\tools\setup-map-tools.ps1
-```
-
-Run the headless generator. It reads the ATS archives directly, writes tiles under `.truckcompanion-cache\ats-tiles\{mapFingerprint}`, writes POI and route-graph data under `.truckcompanion-cache\ats-map`, and skips regeneration when the map fingerprint is unchanged:
+Generate local ATS map data. The active map workflow uses the pinned `truckermudgeon/maps` submodule under `tools/vendor/truckermudgeon-maps`, runs its parser/generator, and writes PMTiles/search/route-graph artifacts under `.truckcompanion-cache\ats-map-v2`:
 
 ```powershell
 .\tools\generate-ats-tiles.ps1
@@ -41,12 +36,18 @@ Run the headless generator. It reads the ATS archives directly, writes tiles und
 Useful options:
 
 ```powershell
-.\tools\generate-ats-tiles.ps1 -MaxZoom 7 -TileSize 512
 .\tools\generate-ats-tiles.ps1 -Force
-.\tools\generate-ats-tiles.ps1 -ExtractArchives
+.\tools\generate-ats-tiles.ps1 -SkipDocker
+.\tools\generate-ats-tiles.ps1 -AtsInstallPath "D:\SteamLibrary\steamapps\common\American Truck Simulator"
 ```
 
-`-ExtractArchives` is a slow fallback/diagnostic path and is not required for normal tile generation. Generated tiles and extracted/generated data stay under `.truckcompanion-cache` and are ignored by git. The app serves tiles at `/tiles/ats/{version}/{z}/{x}/{y}.png` and reports readiness/staleness at `/api/map/status`.
+Docker is used for `tippecanoe` PMTiles generation by default with `klokantech/tippecanoe:latest`. `-SkipDocker` is only useful when `ats.pmtiles` already exists or you are debugging parser/generator output. Generated data stays under `.truckcompanion-cache` and is ignored by git. The app serves generated map files at `/map/*` and reports readiness/staleness at `/api/map/status`.
+
+One-command local restart:
+
+```powershell
+.\tools\restart-map.ps1
+```
 
 Backend:
 
@@ -97,7 +98,10 @@ Map endpoints:
 ```text
 http://localhost:5000/api/map/status
 http://localhost:5000/api/map/tile-manifest
-http://localhost:5000/tiles/ats/{version}/0/0/0.png
+http://localhost:5000/map/ats.pmtiles
+http://localhost:5000/map/ats-search.geojson
+http://localhost:5000/map/spritesheet.json
+http://localhost:5000/map/spritesheet.png
 http://localhost:5000/api/map/viewport?minX=-90000&minZ=60000&maxX=-50000&maxZ=90000&detail=3
 http://localhost:5000/api/map/route?fromX=-80300&fromZ=73500&toCompany=Rail%20Export&toCity=Phoenix
 http://localhost:5000/api/map/pois?kind=fuel

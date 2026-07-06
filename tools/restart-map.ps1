@@ -2,16 +2,13 @@ param(
     [string]$AtsInstallPath = "C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator",
     [string]$CacheRoot = ".\.truckcompanion-cache",
     [string]$ToolsRoot = ".\tools\vendor",
-    [int]$MinZoom = 0,
-    [int]$MaxZoom = 7,
-    [int]$TileSize = 512,
-    [int]$MapPadding = 500,
-    [string]$RenderFlags = "Prefabs,Roads,MapAreas,MapOverlays,FerryConnections,CityNames,SecretRoads",
-    [string]$Mods = "",
+    [string]$TruckermudgeonMapsPath = "",
+    [string]$TippecanoeImage = "klokantech/tippecanoe:latest",
     [int]$ApiPort = 5000,
     [int]$WebPort = 5173,
     [switch]$ForceTiles,
-    [switch]$ExtractArchives,
+    [switch]$SkipDocker,
+    [switch]$SkipParserBuild,
     [switch]$SkipTileGeneration,
     [switch]$SkipNpmInstall
 )
@@ -22,7 +19,6 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptRoot "..")
 $webRoot = Join-Path $repoRoot "src\TruckCompanion.Web"
 $apiProject = Join-Path $repoRoot "src\TruckCompanion.Api\TruckCompanion.Api.csproj"
-$setupScript = Join-Path $repoRoot "tools\setup-map-tools.ps1"
 $tileScript = Join-Path $repoRoot "tools\generate-ats-tiles.ps1"
 
 function Invoke-Step {
@@ -103,40 +99,36 @@ $Command
     ) | Out-Null
 }
 
-Invoke-Step "Verify map tools" {
-    & $setupScript -ToolsRoot $ToolsRoot
-}
-
 if (!$SkipTileGeneration) {
-    Invoke-Step "Generate ATS map tiles" {
+    Invoke-Step "Generate ATS map data" {
         $tileArgs = @{
             AtsInstallPath = $AtsInstallPath
             CacheRoot = $CacheRoot
             ToolsRoot = $ToolsRoot
-            MinZoom = $MinZoom
-            MaxZoom = $MaxZoom
-            TileSize = $TileSize
-            MapPadding = $MapPadding
-            RenderFlags = $RenderFlags
+            TippecanoeImage = $TippecanoeImage
         }
 
-        if ($Mods) {
-            $tileArgs.Mods = $Mods
+        if ($TruckermudgeonMapsPath) {
+            $tileArgs.TruckermudgeonMapsPath = $TruckermudgeonMapsPath
         }
 
         if ($ForceTiles) {
             $tileArgs.Force = $true
         }
 
-        if ($ExtractArchives) {
-            $tileArgs.ExtractArchives = $true
+        if ($SkipDocker) {
+            $tileArgs.SkipDocker = $true
+        }
+
+        if ($SkipParserBuild) {
+            $tileArgs.SkipParserBuild = $true
         }
 
         & $tileScript @tileArgs
     }
 }
 else {
-    Write-Host "Skipping tile generation."
+    Write-Host "Skipping map data generation."
 }
 
 Invoke-Step "Prepare frontend dependencies" {

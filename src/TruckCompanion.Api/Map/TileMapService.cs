@@ -1,29 +1,28 @@
-using System.Text.Json;
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace TruckCompanion.Api.Map;
 
 public sealed class TileMapService(IWebHostEnvironment environment)
 {
     private const string DefaultAtsPath = @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator";
-    private const string GeneratorVersion = "2";
-    private const string DefaultRenderFlags = "Prefabs, Roads, MapAreas, MapOverlays, FerryConnections, CityNames, SecretRoads";
+    private const string GeneratorVersion = "truckermudgeon-maps:d56d0e3fb319230e84284f3029f8bda2c4b572a2";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly string tileRoot = ResolveTileRoot(environment.ContentRootPath);
-    private readonly string manifestPath = Path.Combine(ResolveTileRoot(environment.ContentRootPath), "tile-manifest.json");
+    private readonly string mapRoot = ResolveMapRoot(environment.ContentRootPath);
+    private readonly string manifestPath = Path.Combine(ResolveMapRoot(environment.ContentRootPath), "manifest.json");
 
     public TileMapStatus GetStatus()
     {
         var manifest = TryReadManifest();
-        var missing = new List<string>();
         var fingerprint = TryComputeFingerprint(DefaultAtsPath);
-
-        if (!Directory.Exists(tileRoot))
-        {
-            missing.Add("Tile root does not exist. Run tools\\generate-ats-tiles.ps1.");
-        }
+        var parserOutputReady = manifest is not null && Directory.Exists(manifest.ParserOutput);
+        var pmtilesReady = File.Exists(GetGeneratedPath(manifest, "ats.pmtiles"));
+        var graphReady = File.Exists(GetGeneratedPath(manifest, "usa-graph.json"));
+        var searchReady = File.Exists(GetGeneratedPath(manifest, "ats-search.geojson"));
+        var spriteReady = File.Exists(GetGeneratedPath(manifest, "sprites.json")) &&
+                          File.Exists(GetGeneratedPath(manifest, "sprites.png"));
+        var missing = new List<string>();
 
         if (!Directory.Exists(DefaultAtsPath))
         {
@@ -32,66 +31,87 @@ public sealed class TileMapService(IWebHostEnvironment environment)
 
         if (!File.Exists(manifestPath))
         {
-            missing.Add("tile-manifest.json was not found.");
+            missing.Add("manifest.json was not found. Run tools\\generate-ats-tiles.ps1.");
         }
 
-        var versionRoot = manifest is null ? null : Path.Combine(tileRoot, manifest.Version);
-        var tileCount = versionRoot is not null && Directory.Exists(versionRoot)
-            ? Directory.EnumerateFiles(versionRoot, "*.png", SearchOption.AllDirectories).Count()
-            : 0;
-
-        if (manifest is not null && tileCount == 0)
+        if (!parserOutputReady)
         {
-            missing.Add("No PNG tiles were found under the tile root.");
+            missing.Add("Parser output is missing.");
         }
 
-        var tilesReady = manifest is not null && tileCount > 0;
-        var stale = tilesReady &&
+        if (!pmtilesReady)
+        {
+            missing.Add("ats.pmtiles is missing.");
+        }
+
+        if (!graphReady)
+        {
+            missing.Add("usa-graph.json is missing.");
+        }
+
+        if (!searchReady)
+        {
+            missing.Add("ats-search.geojson is missing.");
+        }
+
+        if (!spriteReady)
+        {
+            missing.Add("MapLibre spritesheet files are missing.");
+        }
+
+        var ready = parserOutputReady && pmtilesReady && graphReady && searchReady && spriteReady;
+        var stale = ready &&
             manifest is not null &&
             fingerprint is not null &&
             !string.Equals(manifest.MapFingerprint, fingerprint.Value, StringComparison.OrdinalIgnoreCase);
-        var state = !tilesReady ? "missing" : stale ? "stale" : "ready";
 
         return new TileMapStatus(
-            tilesReady,
+            ready,
             stale,
-            state,
-            tileRoot,
+            !ready ? "missing" : stale ? "stale" : "ready",
+            mapRoot,
             manifestPath,
             DefaultAtsPath,
             fingerprint?.Value,
-            manifest?.Version,
-            tileCount,
-            manifest?.MaxZoom,
+            manifest?.MapFingerprint,
             manifest?.Source,
-            fingerprint?.DlcArchiveCount ?? manifest?.DlcArchiveCount ?? 0,
             manifest?.GeneratedAtUtc,
-            $@".\tools\generate-ats-tiles.ps1 -AtsInstallPath ""{DefaultAtsPath}"" -MaxZoom 7 -TileSize 512",
+            $@".\tools\generate-ats-tiles.ps1 -AtsInstallPath ""{DefaultAtsPath}""",
+            new MapArtifactStatus(
+                pmtilesReady ? "/map/ats.pmtiles" : null,
+                searchReady ? "/map/ats-search.geojson" : null,
+                spriteReady ? "/map/spritesheet" : null,
+                null,
+                parserOutputReady,
+                pmtilesReady,
+                graphReady,
+                searchReady,
+                spriteReady),
             missing);
     }
 
     public TileMapManifest? GetManifest() => TryReadManifest();
 
-    public string? GetTilePath(string version, int z, int x, int y)
+    public string? GetMapFilePath(string fileName)
     {
         var manifest = TryReadManifest();
-        if (manifest is null || !string.Equals(manifest.Version, version, StringComparison.OrdinalIgnoreCase))
+        var path = fileName switch
+        {
+            "ats.pmtiles" => GetGeneratedPath(manifest, "ats.pmtiles"),
+            "ats-search.geojson" => GetGeneratedPath(manifest, "ats-search.geojson"),
+            "spritesheet.json" => GetGeneratedPath(manifest, "sprites.json"),
+            "spritesheet.png" => GetGeneratedPath(manifest, "sprites.png"),
+            _ => null
+        };
+
+        if (path is null || !File.Exists(path))
         {
             return null;
         }
 
-        if (z < manifest.MinZoom || z > manifest.MaxZoom || x < 0 || y < 0)
-        {
-            return null;
-        }
-
-        var path = Path.GetFullPath(Path.Combine(tileRoot, version, z.ToString(), x.ToString(), $"{y}.png"));
-        if (!path.StartsWith(Path.GetFullPath(tileRoot), StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        return File.Exists(path) ? path : null;
+        var generatedRoot = Path.GetFullPath(manifest?.GeneratedOutput ?? Path.Combine(mapRoot, "generated"));
+        var fullPath = Path.GetFullPath(path);
+        return fullPath.StartsWith(generatedRoot, StringComparison.OrdinalIgnoreCase) ? fullPath : null;
     }
 
     private TileMapManifest? TryReadManifest()
@@ -103,8 +123,7 @@ public sealed class TileMapService(IWebHostEnvironment environment)
 
         try
         {
-            var json = File.ReadAllText(manifestPath);
-            return JsonSerializer.Deserialize<TileMapManifest>(json, JsonOptions);
+            return JsonSerializer.Deserialize<TileMapManifest>(File.ReadAllText(manifestPath), JsonOptions);
         }
         catch
         {
@@ -112,10 +131,16 @@ public sealed class TileMapService(IWebHostEnvironment environment)
         }
     }
 
-    private static string ResolveTileRoot(string contentRoot)
+    private static string? GetGeneratedPath(TileMapManifest? manifest, string fileName)
+    {
+        var root = manifest?.GeneratedOutput;
+        return string.IsNullOrWhiteSpace(root) ? null : Path.Combine(root, fileName);
+    }
+
+    private static string ResolveMapRoot(string contentRoot)
     {
         var repoRoot = Path.GetFullPath(Path.Combine(contentRoot, "..", ".."));
-        return Path.Combine(repoRoot, ".truckcompanion-cache", "ats-tiles");
+        return Path.Combine(repoRoot, ".truckcompanion-cache", "ats-map-v2");
     }
 
     private static MapFingerprint? TryComputeFingerprint(string atsPath)
@@ -126,11 +151,8 @@ public sealed class TileMapService(IWebHostEnvironment environment)
         }
 
         var files = EnumerateMapFiles(atsPath).ToArray();
-        var gameVersion = TryGetGameVersion(atsPath);
         var builder = new StringBuilder();
-        builder.AppendLine($"generator={GeneratorVersion}");
-        builder.AppendLine($"gameVersion={gameVersion}");
-        builder.AppendLine($"minZoom=0;maxZoom=7;tileSize=512;padding=500;flags={DefaultRenderFlags}");
+        builder.AppendLine(GeneratorVersion);
 
         foreach (var file in files)
         {
@@ -138,8 +160,7 @@ public sealed class TileMapService(IWebHostEnvironment environment)
         }
 
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
-        var dlcArchiveCount = files.Count(file => Path.GetFileName(file.RelativePath).StartsWith("dlc", StringComparison.OrdinalIgnoreCase));
-        return new MapFingerprint(hash, dlcArchiveCount);
+        return new MapFingerprint(hash);
     }
 
     private static IEnumerable<FingerprintFile> EnumerateMapFiles(string atsPath)
@@ -159,12 +180,6 @@ public sealed class TileMapService(IWebHostEnvironment environment)
         }
     }
 
-    private static string? TryGetGameVersion(string atsPath)
-    {
-        var exe = Path.Combine(atsPath, "bin", "win_x64", "amtrucks.exe");
-        return File.Exists(exe) ? FileVersionInfo.GetVersionInfo(exe).ProductVersion : null;
-    }
-
     private sealed record FingerprintFile(string RelativePath, long Length, DateTimeOffset LastWriteTimeUtc)
     {
         public static FingerprintFile From(string root, string path)
@@ -177,5 +192,5 @@ public sealed class TileMapService(IWebHostEnvironment environment)
         }
     }
 
-    private sealed record MapFingerprint(string Value, int DlcArchiveCount);
+    private sealed record MapFingerprint(string Value);
 }

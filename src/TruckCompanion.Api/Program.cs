@@ -85,18 +85,37 @@ app.MapGet("/api/map/tile-manifest", (TileMapService tiles) =>
 {
     var manifest = tiles.GetManifest();
     return manifest is null
-        ? Results.NotFound(new { error = "Generated ATS tiles were not found. Run tools\\generate-ats-tiles.ps1." })
+        ? Results.NotFound(new { error = "Generated ATS map data was not found. Run tools\\generate-ats-tiles.ps1." })
         : Results.Ok(manifest);
 });
 
-app.MapGet("/tiles/ats/{version}/{z:int}/{x:int}/{y:int}.png", (
-    string version,
-    int z,
-    int x,
-    int y,
-    TileMapService tiles) =>
+app.MapGet("/map/ats.pmtiles", (TileMapService tiles) =>
 {
-    var path = tiles.GetTilePath(version, z, x, y);
+    var path = tiles.GetMapFilePath("ats.pmtiles");
+    return path is null
+        ? Results.NotFound()
+        : Results.File(path, "application/octet-stream", enableRangeProcessing: true);
+});
+
+app.MapGet("/map/ats-search.geojson", (TileMapService tiles) =>
+{
+    var path = tiles.GetMapFilePath("ats-search.geojson");
+    return path is null
+        ? Results.NotFound()
+        : Results.File(path, "application/geo+json", enableRangeProcessing: true);
+});
+
+app.MapGet("/map/spritesheet.json", (TileMapService tiles) =>
+{
+    var path = tiles.GetMapFilePath("spritesheet.json");
+    return path is null
+        ? Results.NotFound()
+        : Results.File(path, "application/json", enableRangeProcessing: true);
+});
+
+app.MapGet("/map/spritesheet.png", (TileMapService tiles) =>
+{
+    var path = tiles.GetMapFilePath("spritesheet.png");
     return path is null
         ? Results.NotFound()
         : Results.File(path, "image/png", enableRangeProcessing: true);

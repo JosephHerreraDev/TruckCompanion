@@ -5,7 +5,6 @@ import type {
   AtsRouteStop,
   Poi,
   TelemetrySnapshot,
-  TileMapManifest,
   TileMapStatus
 } from "../types";
 
@@ -115,15 +114,6 @@ export async function getTileMapStatus(): Promise<TileMapStatus> {
   const response = await fetch("/api/map/status");
   if (!response.ok) {
     throw new Error(`Map status request failed: ${response.status}`);
-  }
-
-  return response.json();
-}
-
-export async function getTileMapManifest(): Promise<TileMapManifest> {
-  const response = await fetch("/api/map/tile-manifest");
-  if (!response.ok) {
-    throw new Error(`Tile manifest request failed: ${response.status}`);
   }
 
   return response.json();

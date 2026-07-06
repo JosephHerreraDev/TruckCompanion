@@ -1,50 +1,41 @@
 namespace TruckCompanion.Api.Map;
 
-public sealed record TileMapManifest(
-    string Version,
-    string MapFingerprint,
-    int TileSize,
-    int MinZoom,
-    int MaxZoom,
-    TileMapBounds AtsBounds,
-    TilePixelSize PixelSizeAtMaxZoom,
-    string TileUrlTemplate,
-    DateTimeOffset GeneratedAtUtc,
-    string Source,
-    string? GameVersion,
-    int DlcArchiveCount,
-    int TileCount,
-    IReadOnlyList<TileMapCity> Cities);
-
-public sealed record TileMapCity(
-    string Name,
-    string TokenName,
-    double X,
-    double Z);
-
-public sealed record TileMapBounds(
-    double MinX,
-    double MinZ,
-    double MaxX,
-    double MaxZ);
-
-public sealed record TilePixelSize(
-    int Width,
-    int Height);
-
 public sealed record TileMapStatus(
     bool TilesReady,
     bool Stale,
     string State,
-    string TileRoot,
+    string MapRoot,
     string ManifestPath,
     string InstalledAtsPath,
     string? CurrentFingerprint,
-    string? Version,
-    int TileCount,
-    int? MaxZoom,
+    string? MapFingerprint,
     string? Source,
-    int DlcArchiveCount,
     DateTimeOffset? LastGeneratedUtc,
     string RecommendedCommand,
+    MapArtifactStatus Artifacts,
     IReadOnlyList<string> Missing);
+
+public sealed record MapArtifactStatus(
+    string? PmtilesUrl,
+    string? SearchUrl,
+    string? SpriteUrl,
+    string? GlyphsUrl,
+    bool ParserOutputReady,
+    bool PmtilesReady,
+    bool GraphReady,
+    bool SearchReady,
+    bool SpriteReady);
+
+public sealed record TileMapManifest(
+    int SchemaVersion,
+    string Source,
+    DateTimeOffset GeneratedAtUtc,
+    string AtsInstallPath,
+    string MapFingerprint,
+    string ParserOutput,
+    string GeneratedOutput,
+    string PmtilesPath,
+    string GraphPath,
+    string SearchPath,
+    string SpritesheetJsonPath,
+    string SpritesheetImagePath);

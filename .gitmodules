@@ -1,0 +1,3 @@
+[submodule "tools/vendor/truckermudgeon-maps"]
+	path = tools/vendor/truckermudgeon-maps
+	url = https://github.com/truckermudgeon/maps.git

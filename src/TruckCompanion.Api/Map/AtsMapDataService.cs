@@ -1,81 +1,72 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TruckCompanion.Api.Map;
 
 public sealed class AtsMapDataService(IWebHostEnvironment environment)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly Lazy<AtsMapDatabase> database = new(() => LoadDatabase(environment.ContentRootPath));
+    private readonly Lazy<MapRuntimeData> data = new(() => LoadData(environment.ContentRootPath));
     private readonly object routeLock = new();
     private readonly List<AtsRouteStop> routeStops = [];
 
     public AtsMapViewport GetViewport(double minX, double minZ, double maxX, double maxZ, int detail)
     {
-        var db = database.Value;
         var padding = Math.Clamp(detail, 1, 5) * 2500;
         minX -= padding;
         minZ -= padding;
         maxX += padding;
         maxZ += padding;
 
-        var roads = db.Roads.Where(road => road.Geometry.Any(point => InBounds(point, minX, minZ, maxX, maxZ))).ToArray();
-        var areas = db.Areas.Where(area => area.Polygon.Any(point => InBounds(point, minX, minZ, maxX, maxZ))).ToArray();
-        var points = db.Points.Where(point => InBounds(point.Coordinate, minX, minZ, maxX, maxZ)).ToArray();
+        var points = data.Value.Points
+            .Where(point => InBounds(point.Coordinate, minX, minZ, maxX, maxZ))
+            .ToArray();
 
-        return new AtsMapViewport(
-            db.Source,
-            roads,
-            areas,
-            points);
+        return new AtsMapViewport(data.Value.Source, [], [], points);
     }
 
     public IReadOnlyList<AtsMapPoint> GetPois(string? kind = null)
     {
-        var points = database.Value.Points;
-        if (string.IsNullOrWhiteSpace(kind))
-        {
-            return points;
-        }
-
-        return points
-            .Where(point => string.Equals(point.Kind, kind, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
+        var points = data.Value.Points;
+        return string.IsNullOrWhiteSpace(kind)
+            ? points
+            : points.Where(point => string.Equals(point.Kind, kind, StringComparison.OrdinalIgnoreCase)).ToArray();
     }
 
     public AtsMapRoute GetRoute(double fromX, double fromZ, string? toCompany, string? toCity)
     {
-        var db = database.Value;
+        var runtime = data.Value;
         var start = new AtsMapCoordinate(fromX, fromZ);
         var stops = GetStops();
-        var destination = FindDestination(db, start, toCompany, toCity);
-        var routeTargets = stops
+        var destination = FindDestination(runtime.Points, start, toCompany, toCity);
+        var targets = stops
             .Select(stop => stop.Coordinate)
             .Concat(destination is null ? [] : [destination.Coordinate])
             .ToArray();
 
-        if (routeTargets.Length == 0)
+        if (targets.Length == 0)
         {
-            return new AtsMapRoute(db.Source, [start], [], stops, db.IsRealMapData, "noDestination");
+            return new AtsMapRoute(runtime.Source, [start], [], stops, runtime.Ready, "noDestination");
         }
 
-        if (db.RouteGraph is null || db.RouteGraph.Nodes.Count == 0 || db.RouteGraph.Edges.Count == 0)
+        if (!runtime.Ready)
         {
-            var fallback = BuildSeedRouteThroughTargets(db, start, routeTargets);
-            return new AtsMapRoute(db.Source, fallback, CreateArrows(fallback), stops, db.IsRealMapData, "seedData", RouteLength(fallback));
+            var fallback = BuildDirectRoute(start, targets);
+            return new AtsMapRoute(runtime.Source, fallback, CreateArrows(fallback), stops, false, "seedData", RouteLength(fallback));
         }
 
-        var route = BuildRouteThroughTargets(db.RouteGraph, start, routeTargets);
+        var route = BuildRouteThroughTargets(runtime, start, targets);
         if (route.Geometry.Count == 0)
         {
-            return new AtsMapRoute(db.Source, [], [], stops, db.IsRealMapData, "noPath");
+            return new AtsMapRoute(runtime.Source, [], [], stops, true, "noPath");
         }
 
         return new AtsMapRoute(
-            db.Source,
+            runtime.Source,
             route.Geometry,
             CreateArrows(route.Geometry),
             stops,
-            db.IsRealMapData,
+            true,
             route.Complete ? "routed" : "partialRoute",
             route.Distance);
     }
@@ -84,16 +75,13 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
     {
         lock (routeLock)
         {
-            return routeStops
-                .OrderBy(stop => stop.Order)
-                .ToArray();
+            return routeStops.OrderBy(stop => stop.Order).ToArray();
         }
     }
 
     public AtsRouteStop? AddStop(string pointId)
     {
-        var db = database.Value;
-        var point = db.Points.FirstOrDefault(candidate => string.Equals(candidate.Id, pointId, StringComparison.OrdinalIgnoreCase));
+        var point = data.Value.Points.FirstOrDefault(candidate => string.Equals(candidate.Id, pointId, StringComparison.OrdinalIgnoreCase));
         if (point is null)
         {
             return null;
@@ -101,9 +89,10 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
 
         lock (routeLock)
         {
-            if (routeStops.Any(stop => string.Equals(stop.Id, point.Id, StringComparison.OrdinalIgnoreCase)))
+            var existing = routeStops.FirstOrDefault(stop => string.Equals(stop.Id, point.Id, StringComparison.OrdinalIgnoreCase));
+            if (existing is not null)
             {
-                return routeStops.First(stop => string.Equals(stop.Id, point.Id, StringComparison.OrdinalIgnoreCase));
+                return existing;
             }
 
             var stop = new AtsRouteStop(
@@ -134,10 +123,11 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
         lock (routeLock)
         {
             var byId = routeStops.ToDictionary(stop => stop.Id, StringComparer.OrdinalIgnoreCase);
+            var requested = new HashSet<string>(stopIds, StringComparer.OrdinalIgnoreCase);
             var reordered = stopIds
                 .Where(byId.ContainsKey)
                 .Select(id => byId[id])
-                .Concat(routeStops.Where(stop => !stopIds.Contains(stop.Id, StringComparer.OrdinalIgnoreCase)))
+                .Concat(routeStops.Where(stop => !requested.Contains(stop.Id)))
                 .Select((stop, index) => stop with { Order = index + 1 })
                 .ToList();
 
@@ -147,41 +137,202 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
         }
     }
 
-    private static AtsMapDatabase LoadDatabase(string contentRoot)
+    private static MapRuntimeData LoadData(string contentRoot)
     {
-        foreach (var path in GetDatabasePaths(contentRoot))
+        var repoRoot = Path.GetFullPath(Path.Combine(contentRoot, "..", ".."));
+        var mapRoot = Path.Combine(repoRoot, ".truckcompanion-cache", "ats-map-v2");
+        var manifestPath = Path.Combine(mapRoot, "manifest.json");
+        if (!File.Exists(manifestPath))
         {
-            if (File.Exists(path))
+            var seed = SeedAtsMap.Create("embedded-seed");
+            return new MapRuntimeData(seed.Source, false, seed.Points, new Dictionary<string, GraphNode>(), new Dictionary<string, GraphNeighbors>());
+        }
+
+        var manifest = JsonSerializer.Deserialize<TileMapManifest>(File.ReadAllText(manifestPath), JsonOptions);
+        if (manifest is null)
+        {
+            throw new InvalidOperationException("ATS map v2 manifest could not be parsed.");
+        }
+
+        var nodes = LoadNodes(Path.Combine(manifest.ParserOutput, "usa-nodes.json"));
+        var graph = LoadGraph(manifest.GraphPath);
+        var points = LoadSearchPoints(manifest.SearchPath);
+        return new MapRuntimeData(manifest.Source, nodes.Count > 0 && graph.Count > 0, points, nodes, graph);
+    }
+
+    private static Dictionary<string, GraphNode> LoadNodes(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return new Dictionary<string, GraphNode>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var nodes = new Dictionary<string, GraphNode>(StringComparer.OrdinalIgnoreCase);
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        foreach (var element in document.RootElement.EnumerateArray())
+        {
+            var id = element.GetProperty("uid").GetString();
+            if (string.IsNullOrWhiteSpace(id))
             {
-                var json = File.ReadAllText(path);
-                var parsed = JsonSerializer.Deserialize<AtsMapDatabase>(json, JsonOptions);
-                if (parsed is not null)
-                {
-                    return parsed;
-                }
+                continue;
+            }
+
+            nodes[id] = new GraphNode(id, element.GetProperty("x").GetDouble(), element.GetProperty("y").GetDouble());
+        }
+
+        return nodes;
+    }
+
+    private static Dictionary<string, GraphNeighbors> LoadGraph(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return new Dictionary<string, GraphNeighbors>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var graph = new Dictionary<string, GraphNeighbors>(StringComparer.OrdinalIgnoreCase);
+        var graphElement = document.RootElement.GetProperty("graph");
+
+        foreach (var entry in graphElement.EnumerateArray())
+        {
+            var nodeId = entry[0].GetString();
+            if (string.IsNullOrWhiteSpace(nodeId))
+            {
+                continue;
+            }
+
+            var neighbors = entry[1];
+            graph[nodeId] = new GraphNeighbors(
+                ReadNeighbors(neighbors, "forward"),
+                ReadNeighbors(neighbors, "backward"));
+        }
+
+        return graph;
+    }
+
+    private static IReadOnlyList<GraphNeighbor> ReadNeighbors(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var neighbors) || neighbors.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var result = new List<GraphNeighbor>();
+        foreach (var neighbor in neighbors.EnumerateArray())
+        {
+            var nodeUid = neighbor.GetProperty("nodeUid").GetString();
+            if (string.IsNullOrWhiteSpace(nodeUid))
+            {
+                continue;
+            }
+
+            result.Add(new GraphNeighbor(
+                nodeUid,
+                neighbor.TryGetProperty("distance", out var distance) ? distance.GetDouble() : 0,
+                neighbor.TryGetProperty("duration", out var duration) ? duration.GetDouble() : 0,
+                neighbor.TryGetProperty("direction", out var direction) ? direction.GetString() ?? "forward" : "forward"));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<AtsMapPoint> LoadSearchPoints(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        var points = new List<AtsMapPoint>();
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        if (!document.RootElement.TryGetProperty("features", out var features))
+        {
+            return [];
+        }
+
+        var index = 0;
+        foreach (var feature in features.EnumerateArray())
+        {
+            var properties = feature.GetProperty("properties");
+            var geometry = feature.GetProperty("geometry");
+            var coordinates = geometry.GetProperty("coordinates");
+            var type = properties.TryGetProperty("type", out var typeElement) ? typeElement.GetString() ?? "poi" : "poi";
+            var label = properties.TryGetProperty("label", out var labelElement) ? labelElement.GetString() ?? type : type;
+            var city = TryGetCity(properties);
+            var company = type == "company" ? label : null;
+            var kind = ToPointKind(type, properties);
+            points.Add(new AtsMapPoint(
+                $"{kind}-{Slug(label)}-{index++}",
+                kind,
+                label,
+                city,
+                company,
+                new AtsMapCoordinate(coordinates[0].GetDouble(), coordinates[1].GetDouble())));
+        }
+
+        return points;
+    }
+
+    private static string? TryGetCity(JsonElement properties)
+    {
+        if (!properties.TryGetProperty("city", out var cityElement) || cityElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return cityElement.TryGetProperty("name", out var name) ? name.GetString() : null;
+    }
+
+    private static string ToPointKind(string type, JsonElement properties)
+    {
+        if (type == "city" || type == "scenery")
+        {
+            return "city";
+        }
+
+        if (type == "dealer")
+        {
+            return "dealer";
+        }
+
+        if (type == "company")
+        {
+            return "company";
+        }
+
+        if (properties.TryGetProperty("sprite", out var spriteElement))
+        {
+            var sprite = spriteElement.GetString() ?? "";
+            if (sprite.Contains("gas", StringComparison.OrdinalIgnoreCase))
+            {
+                return "fuel";
+            }
+
+            if (sprite.Contains("service", StringComparison.OrdinalIgnoreCase))
+            {
+                return "service";
             }
         }
 
-        return SeedAtsMap.Create("embedded-seed");
+        return type;
     }
 
-    private static IEnumerable<string> GetDatabasePaths(string contentRoot)
+    private static AtsMapPoint? FindDestination(IReadOnlyList<AtsMapPoint> points, AtsMapCoordinate start, string? toCompany, string? toCity)
     {
-        var repoRoot = Path.GetFullPath(Path.Combine(contentRoot, "..", ".."));
-        yield return Path.Combine(repoRoot, ".truckcompanion-cache", "ats-map", "ats-map.db");
-        yield return Path.Combine(contentRoot, "Data", "ats-map.db");
-    }
+        if (string.IsNullOrWhiteSpace(toCompany) && string.IsNullOrWhiteSpace(toCity))
+        {
+            return null;
+        }
 
-    private static AtsMapPoint? FindDestination(AtsMapDatabase db, AtsMapCoordinate start, string? toCompany, string? toCity)
-    {
-        return db.Points
+        return points
             .Where(point => Matches(point, toCompany, toCity))
             .OrderBy(point => DistanceSquared(point.Coordinate, start))
             .FirstOrDefault();
     }
 
     private static (IReadOnlyList<AtsMapCoordinate> Geometry, double Distance, bool Complete) BuildRouteThroughTargets(
-        AtsRouteGraph graph,
+        MapRuntimeData runtime,
         AtsMapCoordinate start,
         IReadOnlyList<AtsMapCoordinate> targets)
     {
@@ -192,7 +343,7 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
 
         foreach (var target in targets)
         {
-            var segment = FindShortestPath(graph, current, target);
+            var segment = FindShortestPath(runtime, current, target);
             if (segment.Geometry.Count == 0)
             {
                 return ([], 0, false);
@@ -200,13 +351,7 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
 
             route.AddRange(segment.Geometry.Skip(1));
             totalDistance += segment.Distance;
-            if (!segment.Complete)
-            {
-                complete = false;
-                current = target;
-                continue;
-            }
-
+            complete = complete && segment.Complete;
             current = target;
         }
 
@@ -214,39 +359,50 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
     }
 
     private static (IReadOnlyList<AtsMapCoordinate> Geometry, double Distance, bool Complete) FindShortestPath(
-        AtsRouteGraph graph,
+        MapRuntimeData runtime,
         AtsMapCoordinate start,
         AtsMapCoordinate destination)
     {
-        var nodes = graph.Nodes.ToDictionary(node => node.Id, StringComparer.OrdinalIgnoreCase);
-        if (nodes.Count == 0)
+        var startNode = FindNearestNode(runtime.Nodes.Values, start);
+        var destinationNode = FindNearestNode(runtime.Nodes.Values, destination);
+        var forward = FindShortestPath(runtime, startNode.Id, destinationNode.Id, "forward");
+        var backward = FindShortestPath(runtime, startNode.Id, destinationNode.Id, "backward");
+        var candidates = new[] { forward, backward }
+            .Where(route => route.NodeIds.Count > 0)
+            .OrderBy(route => route.Distance)
+            .ToArray();
+
+        if (candidates.Length == 0)
         {
             return ([], 0, false);
         }
 
-        var startNode = FindNearestNode(graph.Nodes, start);
-        var destinationNode = FindNearestNode(graph.Nodes, destination);
-        if (string.Equals(startNode.Id, destinationNode.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            var direct = new[] { start, destination };
-            return (direct, RouteLength(direct), true);
-        }
+        var best = candidates[0];
+        var geometry = new List<AtsMapCoordinate> { start };
+        geometry.AddRange(best.NodeIds
+            .Select(id => runtime.Nodes[id])
+            .Select(node => new AtsMapCoordinate(node.X, node.Y)));
+        geometry.Add(destination);
 
-        var adjacency = graph.Edges
-            .Where(edge => nodes.ContainsKey(edge.From) && nodes.ContainsKey(edge.To))
-            .SelectMany(edge => new[] { edge, ReverseEdge(edge) })
-            .GroupBy(edge => edge.From, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
-        var frontier = new PriorityQueue<string, double>();
-        var distances = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
-        {
-            [startNode.Id] = 0
-        };
-        var previous = new Dictionary<string, AtsRouteEdge>(StringComparer.OrdinalIgnoreCase);
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return (geometry, RouteLength(geometry), true);
+    }
 
-        frontier.Enqueue(startNode.Id, 0);
+    private static (IReadOnlyList<string> NodeIds, double Distance) FindShortestPath(
+        MapRuntimeData runtime,
+        string startNodeId,
+        string destinationNodeId,
+        string startDirection)
+    {
+        var start = new RouteState(startNodeId, startDirection);
+        var frontier = new PriorityQueue<RouteState, double>();
+        var distances = new Dictionary<RouteState, double>();
+        var previous = new Dictionary<RouteState, RouteState>();
+        var visited = new HashSet<RouteState>();
 
+        distances[start] = 0;
+        frontier.Enqueue(start, 0);
+
+        RouteState? end = null;
         while (frontier.TryDequeue(out var current, out _))
         {
             if (!visited.Add(current))
@@ -254,126 +410,68 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
                 continue;
             }
 
-            if (string.Equals(current, destinationNode.Id, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(current.NodeId, destinationNodeId, StringComparison.OrdinalIgnoreCase))
             {
+                end = current;
                 break;
             }
 
-            if (!adjacency.TryGetValue(current, out var edges))
+            if (!runtime.Graph.TryGetValue(current.NodeId, out var neighbors))
             {
                 continue;
             }
 
+            var edges = string.Equals(current.Direction, "forward", StringComparison.OrdinalIgnoreCase)
+                ? neighbors.Forward
+                : neighbors.Backward;
+
             foreach (var edge in edges)
             {
-                var nextDistance = distances[current] + edge.Distance;
-                if (distances.TryGetValue(edge.To, out var existingDistance) && existingDistance <= nextDistance)
+                if (!runtime.Nodes.ContainsKey(edge.NodeUid))
                 {
                     continue;
                 }
 
-                distances[edge.To] = nextDistance;
-                previous[edge.To] = edge;
-                frontier.Enqueue(edge.To, nextDistance + Math.Sqrt(DistanceSquared(nodes[edge.To].Coordinate, destinationNode.Coordinate)));
+                var next = new RouteState(edge.NodeUid, edge.Direction);
+                var cost = edge.Duration > 0 ? edge.Duration : edge.Distance;
+                var nextDistance = distances[current] + cost;
+                if (distances.TryGetValue(next, out var existing) && existing <= nextDistance)
+                {
+                    continue;
+                }
+
+                distances[next] = nextDistance;
+                previous[next] = current;
+                var priority = nextDistance + Math.Sqrt(DistanceSquared(runtime.Nodes[edge.NodeUid].Coordinate, runtime.Nodes[destinationNodeId].Coordinate));
+                frontier.Enqueue(next, priority);
             }
         }
 
-        var routeEndNodeId = destinationNode.Id;
-        var complete = previous.ContainsKey(destinationNode.Id);
-
-        if (!complete)
+        if (end is null)
         {
-            routeEndNodeId = visited
-                .Where(id => !string.Equals(id, startNode.Id, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(id => DistanceSquared(nodes[id].Coordinate, destination))
-                .FirstOrDefault() ?? string.Empty;
-
-            if (string.IsNullOrWhiteSpace(routeEndNodeId) || !previous.ContainsKey(routeEndNodeId))
-            {
-                return ([], 0, false);
-            }
+            return ([], 0);
         }
 
-        var pathEdges = new List<AtsRouteEdge>();
-        var step = routeEndNodeId;
-        while (!string.Equals(step, startNode.Id, StringComparison.OrdinalIgnoreCase))
+        var states = new List<RouteState> { end.Value };
+        var step = end.Value;
+        while (!step.Equals(start))
         {
-            var edge = previous[step];
-            pathEdges.Add(edge);
-            step = edge.From;
+            step = previous[step];
+            states.Add(step);
         }
 
-        pathEdges.Reverse();
-
-        var geometry = new List<AtsMapCoordinate> { start };
-        foreach (var edge in pathEdges)
-        {
-            geometry.AddRange(edge.Geometry.Skip(geometry.Count == 1 ? 0 : 1));
-        }
-
-        geometry.Add(destination);
-        return (geometry, RouteLength(geometry), complete);
+        states.Reverse();
+        return (states.Select(state => state.NodeId).ToArray(), distances[end.Value]);
     }
 
-    private static AtsRouteNode FindNearestNode(IReadOnlyList<AtsRouteNode> nodes, AtsMapCoordinate coordinate)
-    {
-        return nodes
-            .OrderBy(node => DistanceSquared(node.Coordinate, coordinate))
-            .First();
-    }
+    private static GraphNode FindNearestNode(IEnumerable<GraphNode> nodes, AtsMapCoordinate coordinate) =>
+        nodes.OrderBy(node => DistanceSquared(node.Coordinate, coordinate)).First();
 
-    private static AtsRouteEdge ReverseEdge(AtsRouteEdge edge)
-    {
-        return edge with
-        {
-            Id = $"{edge.Id}-reverse",
-            From = edge.To,
-            To = edge.From,
-            Geometry = edge.Geometry.Reverse().ToArray()
-        };
-    }
-
-    private static IReadOnlyList<AtsMapCoordinate> BuildSeedRouteThroughTargets(
-        AtsMapDatabase db,
-        AtsMapCoordinate start,
-        IReadOnlyList<AtsMapCoordinate> targets)
+    private static IReadOnlyList<AtsMapCoordinate> BuildDirectRoute(AtsMapCoordinate start, IReadOnlyList<AtsMapCoordinate> targets)
     {
         var route = new List<AtsMapCoordinate> { start };
-        var current = start;
-
-        foreach (var target in targets)
-        {
-            var segment = BuildSeedRouteOverNearestRoads(db, current, target);
-            route.AddRange(segment.Skip(1));
-            current = target;
-        }
-
+        route.AddRange(targets);
         return route;
-    }
-
-    private static IReadOnlyList<AtsMapCoordinate> BuildSeedRouteOverNearestRoads(
-        AtsMapDatabase db,
-        AtsMapCoordinate start,
-        AtsMapCoordinate destination)
-    {
-        var candidates = db.Roads
-            .OrderBy(road => road.Geometry.Min(point => DistanceSquared(point, start)))
-            .Take(24)
-            .SelectMany(road => road.Geometry)
-            .OrderBy(point => DistanceSquared(point, start))
-            .Take(3)
-            .Concat(
-                db.Roads
-                    .OrderBy(road => road.Geometry.Min(point => DistanceSquared(point, destination)))
-                    .Take(24)
-                    .SelectMany(road => road.Geometry)
-                    .OrderBy(point => DistanceSquared(point, destination))
-                    .Take(3))
-            .Distinct()
-            .OrderBy(point => DistanceSquared(point, start))
-            .ToArray();
-
-        return [start, .. candidates, destination];
     }
 
     private static double RouteLength(IReadOnlyList<AtsMapCoordinate> route)
@@ -438,14 +536,16 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
         return companyMatches && cityMatches;
     }
 
-    private static bool InBounds(AtsMapCoordinate point, double minX, double minZ, double maxX, double maxZ)
-    {
-        return point.X >= minX && point.X <= maxX && point.Z >= minZ && point.Z <= maxZ;
-    }
+    private static bool InBounds(AtsMapCoordinate point, double minX, double minZ, double maxX, double maxZ) =>
+        point.X >= minX && point.X <= maxX && point.Z >= minZ && point.Z <= maxZ;
 
-    private static double DistanceSquared(AtsMapCoordinate a, AtsMapCoordinate b)
+    private static double DistanceSquared(AtsMapCoordinate a, AtsMapCoordinate b) =>
+        Math.Pow(a.X - b.X, 2) + Math.Pow(a.Z - b.Z, 2);
+
+    private static string Slug(string value)
     {
-        return Math.Pow(a.X - b.X, 2) + Math.Pow(a.Z - b.Z, 2);
+        var chars = value.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
+        return new string(chars).Trim('-');
     }
 
     private void ReindexStops()
@@ -455,4 +555,23 @@ public sealed class AtsMapDataService(IWebHostEnvironment environment)
             routeStops[i] = routeStops[i] with { Order = i + 1 };
         }
     }
+
+    private sealed record MapRuntimeData(
+        string Source,
+        bool Ready,
+        IReadOnlyList<AtsMapPoint> Points,
+        IReadOnlyDictionary<string, GraphNode> Nodes,
+        IReadOnlyDictionary<string, GraphNeighbors> Graph);
+
+    private sealed record GraphNode(string Id, double X, double Y)
+    {
+        [JsonIgnore]
+        public AtsMapCoordinate Coordinate => new(X, Y);
+    }
+
+    private sealed record GraphNeighbors(IReadOnlyList<GraphNeighbor> Forward, IReadOnlyList<GraphNeighbor> Backward);
+
+    private sealed record GraphNeighbor(string NodeUid, double Distance, double Duration, string Direction);
+
+    private readonly record struct RouteState(string NodeId, string Direction);
 }

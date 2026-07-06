@@ -7,8 +7,6 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TruckCompanion.Api", "src\T
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TruckCompanion.MapImport", "src\TruckCompanion.MapImport\TruckCompanion.MapImport.csproj", "{8B0D367E-08DA-467E-82E8-7A4B16ABA6DE}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TruckCompanion.TileGenerator", "src\TruckCompanion.TileGenerator\TruckCompanion.TileGenerator.csproj", "{787EC14C-1231-44CE-85F3-868F7185A367}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +24,5 @@ Global
 		{8B0D367E-08DA-467E-82E8-7A4B16ABA6DE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8B0D367E-08DA-467E-82E8-7A4B16ABA6DE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8B0D367E-08DA-467E-82E8-7A4B16ABA6DE}.Release|Any CPU.Build.0 = Release|Any CPU
-		{787EC14C-1231-44CE-85F3-868F7185A367}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{787EC14C-1231-44CE-85F3-868F7185A367}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{787EC14C-1231-44CE-85F3-868F7185A367}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{787EC14C-1231-44CE-85F3-868F7185A367}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
